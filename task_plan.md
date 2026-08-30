@@ -1,17 +1,21 @@
 # Pi with ChatGPT 改造任务计划
 
-## 1. 改造目标
+> 最后更新：2026-08-30  
+> 当前稳定基线：`main` @ `2024c067`（Phase 0–2 已合并）  
+> 当前开发分支：`feat/phase3-manual-transport`（Phase 3 实现中，等待完整验收）
 
-将当前从 `codex-with-chatgpt` fork 而来的项目，改造成以 **Pi 作为本地执行 Agent、ChatGPT Web 作为规划与独立 Review 层** 的 `pi-with-chatgpt`。
+## 1. 项目目标
 
-目标原则：
+将从 `codex-with-chatgpt` fork 而来的项目改造成以 **Pi 作为本地执行 Agent、ChatGPT Web 作为规划与独立 Review 层** 的 `pi-with-chatgpt`。
+
+核心原则：
 
 - **ChatGPT thinks. Pi works.**
-- ChatGPT 只通过只读 MCP 查看工作区，不拥有写文件、Shell、提交代码等能力。
-- Pi 负责本地代码读取、修改、命令执行、测试、git 操作和修复。
-- 编排状态机由 Pi Extension 管理，不再依赖超长 Skill 文本让 Agent “自觉”维持流程。
-- 保留现有 Bridge / MCP / OAuth / Pairing / Workspace / Tunnel 安全架构。
-- 优先最小改动跑通闭环，再逐步完成命名迁移和产品化。
+- ChatGPT 只通过只读 MCP 查看当前 workspace，不拥有写文件、Shell、commit、install 等能力。
+- Pi 负责本地读取、修改、命令执行、测试、git 和修复。
+- 编排状态机由 Pi Extension 管理，不再依赖超长 Skill prompt 维持流程。
+- 保留并复用现有 Bridge / MCP / OAuth / Pairing / Workspace / Tunnel 安全架构。
+- 控制面只交换小型 `[P2C]` 状态消息；源码、diff、日志由 ChatGPT 通过 MCP 按需读取。
 
 目标闭环：
 
@@ -25,65 +29,36 @@ ChatGPT PLAN
 Pi EXECUTE
   ↓
 ChatGPT REVIEW
-  ↓
-Pi FIX（如需要）
-  ↓
-ChatGPT DONE
+  ├── DONE
+  └── PLAN / FIX
+        ↓
+      Pi FIX
+        ↓
+      ChatGPT REVIEW
 ```
 
 ---
 
-## 2. 当前仓库现状
+## 2. 当前进展总览
 
-当前 fork 已经不是最早版本，现有代码已经包含：
+| Phase | 状态 | 说明 |
+|---|---|---|
+| Phase 0 — Pi 产品身份 | ✅ 已合并 | PR #1；`p2c`、产品命名、connector 兼容、CI 基线 |
+| Phase 1 — 去 Codex Hard Dependency | ✅ 已合并 | PR #2/#3；状态目录迁移兼容、setup/doctor 不再依赖 Codex sandbox |
+| Phase 2 — Pi Package 骨架 | ✅ 已合并 | PR #4；Pi manifest、Extension、Skill、`/p2c-status`、`/p2c-setup` |
+| Phase 3 — ManualTransport 闭环 | 🟡 实现完成，待验收 | 当前开发分支；协议、状态机、orchestrator、collector、测试已落地 |
+| Phase 4 — Execution Gate | ⏳ 未开始 | 用 `tool_call` hook 强制 planning/review 只读 |
+| Phase 5 — Plan Approval | ⏳ 未开始 | `auto` / `plan`，批准/拒绝/修改计划 |
+| Phase 6 — PlaywrightTransport | ⏳ 未开始 | 自动化 ChatGPT Web 控制面 |
+| Phase 7 — 产品化迁移 | ⏳ 部分完成 | Pi/P2C 基础命名已完成，README/config/release 等仍待做 |
 
-- Cloudflare Quick Tunnel
-- 可选 Cloudflare Named Tunnel / 固定域名
-- OAuth 2.1 + PKCE
-- 一次性配对码
-- Workspace 级权限隔离
-- 只读 MCP 工具
-- git diff / test status / execution summary
-- ChatGPT session 记录
-- doctor / setup / tunnel / record 等 CLI 命令
-
-目前最强的 Codex 绑定集中在：
-
-1. `skill/SKILL.md`
-   - Codex 身份描述
-   - Codex in-app browser (`iab`)
-   - Codex sandbox writable_roots
-   - Codex 自动更新流程
-   - Codex 负责状态机推进
-
-2. `src/config/sandbox-allow.ts`
-   - 直接读取/修改 `~/.codex/config.toml`
-   - 使用 `CODEX_HOME`
-
-3. `src/cli/index.ts`
-   - CLI 名称仍为 `c2c`
-   - 产品文案仍为 `Codex with ChatGPT`
-   - `doctor` 强制检查 Codex sandbox
-   - `record` 描述为 Codex execution
-
-4. `src/version.ts`
-   - `PRODUCT_NAME = "Codex with ChatGPT"`
-   - `SERVICE_NAME = "c2c-bridge"`
-
-5. `src/config/paths.ts`
-   - state dir 仍为 `codex-with-chatgpt`
-   - 环境变量仍为 `C2C_STATE_DIR`
-
-6. `src/config/endpoint.ts`
-   - 默认 connector 名称仍为 `Codex with ChatGPT`
+详细开发日志见 [`progress.md`](progress.md)。
 
 ---
 
-## 3. 总体架构设计
+## 3. 当前架构
 
-### 3.1 Core 层继续复用
-
-以下模块应尽可能保持 Agent-neutral，不做大改：
+### Core（Agent-neutral，继续复用）
 
 ```text
 src/auth/
@@ -94,23 +69,35 @@ src/workspace/
 src/tunnel/
 src/process/
 src/logger/
+src/execution/
 ```
 
-这些模块本质上与 Codex / Pi 无关，应作为 `Pi with ChatGPT Core` 保留。
+这些模块继续承担：
 
-### 3.2 新增 Pi Adapter 层
+- 只读 MCP
+- OAuth 2.1 + PKCE
+- 一次性 pairing code
+- workspace 权限边界
+- sensitive path / git diff 过滤
+- Quick Tunnel / Named Tunnel
+- execution records
 
-建议新增：
+### Pi Adapter
+
+当前目标结构：
 
 ```text
 extensions/
 └── pi-with-chatgpt/
+    ├── api.ts
+    ├── core.ts
     ├── index.ts
     ├── orchestrator.ts
     ├── state.ts
+    ├── manual-transport.ts
     ├── execution-collector.ts
-    ├── security-gate.ts
-    └── ui.ts
+    ├── security-gate.ts        # Phase 4
+    └── ui.ts                   # 后续可继续拆分
 
 skills/
 └── pi-with-chatgpt/
@@ -118,30 +105,16 @@ skills/
 
 src/control/
 ├── types.ts
-├── chatgpt-session.ts
 └── transports/
     ├── manual.ts
-    └── playwright.ts
+    └── playwright.ts           # Phase 6
 ```
-
-职责划分：
-
-- `Extension`：真正的编排器和状态机。
-- `Skill`：只负责触发条件和行为说明，不承担状态机。
-- `Control Transport`：负责 Pi 与 ChatGPT Web 的控制消息通道。
-- `Core Bridge`：继续负责只读 MCP、安全、OAuth、workspace、tunnel。
 
 ---
 
-## 4. 状态机设计
+## 4. 状态机
 
-不继续完全照搬：
-
-```text
-INIT → PLAN → EXECUTING → EXECUTED → REVIEW → PLAN/DONE
-```
-
-建议 Pi 版内部状态：
+Pi 版内部状态：
 
 ```text
 IDLE
@@ -161,9 +134,16 @@ REVIEWING
       REVIEWING
 ```
 
-### 状态权限
+异常状态：
 
-| 状态 | Pi 可读 | Pi 可写/edit | Pi 可 bash | ChatGPT MCP |
+```text
+BLOCKED
+ERROR
+```
+
+权限目标：
+
+| 状态 | Pi read | Pi write/edit | Pi bash | ChatGPT MCP |
 |---|---:|---:|---:|---:|
 | PREPARING | ✓ | ✗ | ✗ | 可选 |
 | PLANNING | ✓ | ✗ | ✗ | ✓ |
@@ -173,64 +153,13 @@ REVIEWING
 | FIXING | ✓ | ✓ | ✓ | ✓ |
 | DONE | ✓ | ✗ | ✗ | ✓ |
 
-Pi Extension 应通过 `tool_call` gate 阻止不合时机的 `write` / `edit` / `bash`。
+> Phase 3 已实现状态流转；真正的 mutation 强制拦截属于 Phase 4，尚未完成。
 
 ---
 
-## 5. ChatGPT 控制层抽象
+## 5. 控制协议
 
-当前 Codex 版依赖 Codex App 的 in-app browser，Pi 没有该能力，因此必须抽象浏览器传输层。
-
-接口建议：
-
-```ts
-export interface ChatGptTransport {
-  initialize(): Promise<void>;
-  ensureConnected(workspace: WorkspaceConnection): Promise<void>;
-  openSession(session: ChatGptSession): Promise<void>;
-  send(message: ControlMessage): Promise<void>;
-  waitForReply(taskId: string, expected: ControlState[]): Promise<ControlMessage>;
-  close(): Promise<void>;
-}
-```
-
-### V0：ManualTransport
-
-用于最早期打通闭环：
-
-- Extension 生成控制消息。
-- 用户手动粘贴到 ChatGPT。
-- 用户把 ChatGPT 返回内容粘贴回 Pi。
-
-目的不是最终 UX，而是快速验证：
-
-```text
-PLAN → EXECUTE → REVIEW → FIX → DONE
-```
-
-### V1：PlaywrightTransport
-
-正式自动化：
-
-- 使用独立浏览器 profile。
-- 不接管用户日常 Chrome / Edge / Safari。
-- profile 存放在系统状态目录，不进入 workspace。
-- 复用一个 ChatGPT conversation / workspace。
-- 仅通过浏览器发送小型结构化控制消息。
-
-建议 profile：
-
-```text
-~/.pi-with-chatgpt/browser-profile/
-```
-
----
-
-## 6. 协议设计
-
-控制面继续保持“小消息”，禁止发送源码、diff、日志正文。
-
-建议从 `[C2C]` 逐步迁移到 `[P2C]`：
+默认使用 `[P2C]` 小消息：
 
 ```text
 [P2C]
@@ -242,7 +171,14 @@ GOAL:
 ...
 ```
 
-ChatGPT 获取代码仍通过 MCP：
+兼容期解析：
+
+```text
+[P2C]
+[C2C]
+```
+
+ChatGPT 获取代码仍通过现有 MCP：
 
 ```text
 workspace_info
@@ -255,209 +191,15 @@ test_status
 execution_summary
 ```
 
-### 兼容策略
-
-V0/V1 可以同时接受：
-
-```text
-[C2C]
-[P2C]
-```
-
-完成稳定迁移后再删除 C2C 兼容。
+禁止把源码、完整 diff、测试日志正文塞进控制消息。
 
 ---
 
-## 7. Plan Approval
+## 6. 配置与兼容策略
 
-新增配置：
+### CLI
 
-```json
-{
-  "approvalMode": "auto"
-}
-```
-
-或：
-
-```json
-{
-  "approvalMode": "plan"
-}
-```
-
-### auto
-
-```text
-ChatGPT PLAN
-  ↓
-Pi 自动执行
-```
-
-### plan
-
-```text
-ChatGPT PLAN
-  ↓
-展示给用户
-  ↓
-用户确认
-  ↓
-Pi 执行
-```
-
-默认建议 V1 使用 `plan`，稳定后再考虑默认 `auto`。
-
----
-
-## 8. Execution Record 去 Codex 化
-
-当前 `ExecutionRecord` 结构可以兼容保留，但应增加 agent 信息。
-
-目标结构：
-
-```ts
-export interface ExecutionRecord {
-  taskId: string;
-  iteration: number;
-  agent?: {
-    kind: "pi" | "codex" | string;
-    model?: string;
-  };
-  changedFiles: string[] | number;
-  tests: string | null;
-  exitStatus: "ok" | "failed" | "blocked" | string;
-  timestamp: string;
-  notes?: string;
-}
-```
-
-现有 MCP：
-
-```text
-execution_summary
-test_status
-```
-
-保持兼容。
-
-CLI `record` 文案改为：
-
-```text
-Record an agent execution summary
-```
-
-而不是：
-
-```text
-Record a Codex execution summary
-```
-
----
-
-## 9. Sandbox 改造
-
-### 当前问题
-
-`src/config/sandbox-allow.ts` 完全绑定 Codex：
-
-- `CODEX_HOME`
-- `~/.codex/config.toml`
-- `[sandbox_workspace_write].writable_roots`
-
-Pi 版不应该继续自动修改 Codex 配置。
-
-### V0 方案
-
-- `doctor` 中去掉 Codex sandbox 作为 hard gate。
-- `sandbox-allow` 标记为 legacy / Codex-only。
-- Pi 运行所需 state dir 直接按普通用户权限创建。
-
-### V1 方案
-
-增加 Pi 安全策略层：
-
-```text
-security-gate.ts
-```
-
-负责：
-
-- planning/review 状态禁止写和 shell
-- 可选 protected paths
-- 可选 dangerous command confirmation
-- 可选外部 sandbox / container 模式
-
-不要假设 Pi 自带 Codex 同等级 sandbox。
-
----
-
-## 10. 配置迁移
-
-### 新配置名
-
-建议：
-
-```text
-.p2c.json
-.p2cignore
-P2C_STATE_DIR
-```
-
-### 兼容期读取优先级
-
-```text
-.p2c.json
-  ↓
-.c2c.json
-  ↓
-defaults
-```
-
-Ignore：
-
-```text
-.p2cignore
-  +
-.c2cignore（兼容）
-```
-
-环境变量：
-
-```text
-P2C_STATE_DIR
-  ↓ fallback
-C2C_STATE_DIR
-```
-
-### State Directory
-
-新安装使用：
-
-```text
-macOS:
-~/Library/Application Support/pi-with-chatgpt
-
-Windows:
-%LOCALAPPDATA%\pi-with-chatgpt
-
-Linux:
-$XDG_STATE_HOME/pi-with-chatgpt
-```
-
-旧状态目录支持迁移/读取：
-
-```text
-codex-with-chatgpt
-```
-
-不要第一版直接破坏旧状态。
-
----
-
-## 11. CLI 改造
-
-### 目标命令
+主命令：
 
 ```text
 p2c setup
@@ -475,444 +217,274 @@ p2c logs
 p2c workspace
 ```
 
-### 兼容 alias
-
-第一阶段 package.json：
-
-```json
-{
-  "bin": {
-    "p2c": "./bin/p2c.js",
-    "c2c": "./bin/p2c.js"
-  }
-}
-```
-
-这样旧命令暂时不会立即失效。
-
-### 产品文案
+兼容 alias：
 
 ```text
-Codex with ChatGPT
-→ Pi with ChatGPT
-
-ChatGPT thinks. Codex works.
-→ ChatGPT thinks. Pi works.
+c2c → p2c
 ```
 
-`SERVICE_NAME` 可以第一阶段暂时继续 `c2c-bridge`，避免一次迁移太多状态；稳定后再切 `p2c-bridge`。
+### State Directory
+
+优先级：
+
+```text
+P2C_STATE_DIR
+  ↓
+C2C_STATE_DIR
+  ↓
+已有 codex-with-chatgpt state dir
+  ↓
+新 pi-with-chatgpt state dir
+```
+
+新安装默认：
+
+```text
+macOS:   ~/Library/Application Support/pi-with-chatgpt
+Windows: %LOCALAPPDATA%\pi-with-chatgpt
+Linux:   $XDG_STATE_HOME/pi-with-chatgpt
+```
+
+不会因为产品 rename 自动删除或重建旧 ChatGPT connector。
 
 ---
 
-## 12. Connector 命名迁移
+# 7. 分阶段实施计划
 
-新 workspace：
+## Phase 0 — Fork 基线与 Pi 产品身份 ✅
 
-```text
-Pi with ChatGPT · <workspace>
-```
+目标：不破坏原有安全/连接功能的前提下建立 Pi 产品身份。
 
-已有 endpoint：
+- [x] `package.json` name 改为 `pi-with-chatgpt`
+- [x] description 改为 Pi 文案
+- [x] 新增 `bin/p2c.js`
+- [x] 保留 `c2c` alias
+- [x] `src/version.ts` 产品名改为 `Pi with ChatGPT`
+- [x] 新 workspace connector 默认 `Pi with ChatGPT · <workspace>`
+- [x] 保持旧 connectorName / legacy endpoint 兼容
+- [x] 建立 GitHub Actions CI：test + typecheck + build
+- [x] 修复 pnpm 与 Node 20 的版本兼容
+- [ ] README 全面 Pi 化（移入 Phase 7）
 
-- 如果已有 connectorName，继续沿用旧名称，避免强制重建。
-- 用户主动 migrate 或重新配对时，再切换到 Pi 名称。
-
-不要因为产品 rename 自动删除现有 ChatGPT connector。
-
----
-
-## 13. Skill 重写
-
-当前 `skill/SKILL.md` 约 2 万多字，包含大量 Codex 专属浏览器和状态机操作。
-
-Pi 版不要照抄。
-
-目标 `skills/pi-with-chatgpt/SKILL.md` 应只承担：
-
-- 什么时候使用 Pi with ChatGPT。
-- ChatGPT 是 planning / review 层。
-- Pi 是 execution 层。
-- 不允许把源码/diff/log 直接粘贴到 ChatGPT。
-- 如果 Extension 已加载，应调用 Extension 工作流，不手工模拟状态机。
-
-真正状态管理必须放在 TypeScript Extension。
+验收：✅ 已通过并合并 PR #1。
 
 ---
 
-## 14. Pi Extension API 设计
+## Phase 1 — 去除 Codex Hard Dependency ✅
 
-第一版建议注册：
+目标：完全没有 Codex 的机器也可以正常启动 Core。
 
-```text
-/p2c <goal>
-/p2c-setup
-/p2c-status
-/p2c-stop
-```
+- [x] `doctor` 不再把 Codex sandbox 作为健康条件
+- [x] `setup` 不自动调用 Codex sandbox allow
+- [x] `sandbox-allow` 保留为显式 legacy Codex compatibility command
+- [x] setup/doctor 默认不读取或创建 `~/.codex/config.toml`
+- [x] execution 文案去 Codex 化
+- [x] ExecutionRecord 增加 agent metadata
+- [x] `P2C_STATE_DIR` 优先，兼容 `C2C_STATE_DIR`
+- [x] 新 state dir + 旧 state dir 自动复用策略
+- [x] 集成测试覆盖“没有 Codex 也能 setup/doctor”
+- [x] 集成测试确认 fake `CODEX_HOME` 下不会创建 `config.toml`
 
-内部组件：
-
-### `index.ts`
-
-- 注册 commands
-- 注册 lifecycle hooks
-- 初始化 orchestrator
-
-### `state.ts`
-
-保存：
-
-```ts
-interface WorkflowState {
-  workspaceId: string;
-  taskId: string;
-  iteration: number;
-  state:
-    | "IDLE"
-    | "PREPARING"
-    | "PLANNING"
-    | "PLAN_READY"
-    | "EXECUTING"
-    | "REVIEWING"
-    | "FIXING"
-    | "DONE"
-    | "BLOCKED"
-    | "ERROR";
-}
-```
-
-### `orchestrator.ts`
-
-负责：
-
-```text
-prepare
-requestPlan
-approvePlan
-execute
-collectExecution
-requestReview
-loop
-finish
-```
-
-### `security-gate.ts`
-
-监听 Pi tool calls：
-
-- 非 EXECUTING/FIXING 状态阻止 `write/edit/bash`
-- 可扩展危险命令检查
-
-### `execution-collector.ts`
-
-执行结束后收集：
-
-- changed files
-- git status
-- tests summary
-- exit status
-
-写入现有 execution records。
-
-### `ui.ts`
-
-只处理人类友好的状态：
-
-```text
-Planning…
-Plan ready
-Executing…
-Reviewing…
-2 issues found
-Fixing…
-Review passed
-```
-
-不要向普通用户暴露 OAuth/PKCE/端口等内部细节。
+验收：✅ 已通过并合并 PR #2、PR #3。
 
 ---
 
-## 15. 第一阶段不做的事情
+## Phase 2 — Pi Package 骨架 ✅
 
-为了避免 fork 一开始就失控，以下内容不要放进第一阶段：
+目标：Pi 可以直接安装并加载本项目。
 
-- 不重写 OAuth。
-- 不重写 MCP。
-- 不重写 Workspace path security。
-- 不删除 Quick Tunnel。
-- 不删除已经实现的 Named Tunnel。
-- 不一次性迁移全部 state directory。
-- 不立即删除 `c2c` CLI alias。
-- 不把 browser automation 和 orchestrator 写死耦合。
-- 不做多 ChatGPT 会话并行控制。
-- 不做多个 workspace 同时共享同一个浏览器 tab。
+- [x] Pi package manifest / `pi-package` keyword
+- [x] `extensions/pi-with-chatgpt/` Extension 结构
+- [x] `skills/pi-with-chatgpt/SKILL.md`
+- [x] 注册 `/p2c-status`
+- [x] 注册 `/p2c-setup`
+- [x] Extension 调用本包 `p2c` core
+- [x] Pi 使用当前 `ctx.cwd` 识别 workspace
+- [x] git-installed package 下 `tsx` loader 相对本包解析
+- [x] detached daemon fallback 同样支持 Git 安装目录
+- [x] manifest / command routing 单测
 
----
-
-## 16. 分阶段实施计划
-
-# Phase 0 — Fork 基线与命名层
-
-目标：不破坏现有功能的前提下建立 Pi 产品身份。
-
-任务：
-
-- [ ] `package.json` name 改为 `pi-with-chatgpt`
-- [ ] description 改为 Pi 文案
-- [ ] 新增 `bin/p2c.js`
-- [ ] 保留 `c2c` alias
-- [ ] `src/version.ts` 产品名改为 `Pi with ChatGPT`
-- [ ] endpoint 新 workspace 默认 connector 改为 `Pi with ChatGPT · <workspace>`
-- [ ] 保持已有 connectorName 兼容
-- [ ] README 增加 Pi 改造状态说明
-- [ ] 所有测试继续通过
-
-验收：
-
-```text
-p2c --version
-p2c workspace
-p2c setup --no-tunnel
-```
-
-可正常运行。
-
----
-
-# Phase 1 — 去除 Codex Hard Dependency
-
-目标：Core 可以在完全没有 Codex 的机器上运行。
-
-任务：
-
-- [ ] `doctor` 不再把 Codex sandbox 作为硬性健康条件
-- [ ] `setup` 不自动调用 Codex sandbox allow
-- [ ] `sandbox-allow` 标记 legacy
-- [ ] 去除 CLI 对 `~/.codex/config.toml` 的默认依赖
-- [ ] execution 文案去 Codex 化
-- [ ] `src/config/paths.ts` 支持 `P2C_STATE_DIR`
-- [ ] 增加新 state dir，兼容旧 state dir
-- [ ] 测试覆盖“没有 ~/.codex 也能 setup/doctor”
-
-验收：
-
-全新环境仅安装 Node + cloudflared，也能：
-
-```text
-p2c setup
-p2c doctor
-```
-
----
-
-# Phase 2 — Pi Package 骨架
-
-目标：Pi 可以直接加载本项目。
-
-任务：
-
-- [ ] 新增 `extensions/pi-with-chatgpt/index.ts`
-- [ ] 新增 `skills/pi-with-chatgpt/SKILL.md`
-- [ ] 配置 package metadata 供 Pi 安装
-- [ ] 注册 `/p2c-status`
-- [ ] 注册 `/p2c-setup`
-- [ ] 能从 Extension 调用本地 p2c core
-- [ ] Pi 启动后能识别当前 workspace
-
-验收：
+目标安装方式：
 
 ```text
 pi install git:github.com/lionelzz2025/pi-with-chatgpt
 ```
 
-安装后可以执行：
-
-```text
-/p2c-status
-```
+验收：✅ CI 全绿并合并 PR #4。
 
 ---
 
-# Phase 3 — ManualTransport 闭环
+## Phase 3 — ManualTransport 闭环 🟡
 
-目标：先证明 Pi + ChatGPT 双 Agent 工作流可行。
+目标：先证明 Pi + ChatGPT 双 Agent 的完整控制闭环可行，不依赖浏览器自动化。
 
-任务：
+### 已实现
 
-- [ ] 实现 WorkflowState
-- [ ] 实现 Orchestrator
-- [ ] 实现 ManualTransport
-- [ ] `/p2c <goal>` 请求 ChatGPT PLAN
-- [ ] PLAN 注入 Pi 当前执行上下文
-- [ ] Pi 执行
-- [ ] execution collector 写 record
-- [ ] 请求 ChatGPT REVIEW
-- [ ] REVIEW=PLAN 时进入 FIXING
-- [ ] REVIEW=DONE 时结束
-- [ ] maxIterations 生效
+- [x] `[P2C]` protocol types / parser / serializer
+- [x] 兼容解析 `[C2C]`
+- [x] `WorkflowStateMachine`
+- [x] `Orchestrator`
+- [x] `ManualTransport`
+- [x] `/p2c <goal>` 入口
+- [x] PREPARING / PLANNING / PLAN_READY / EXECUTING / REVIEWING / FIXING / DONE 状态流
+- [x] PLAN 通过 `sendUserMessage(..., { deliverAs: "followUp" })` 注入 Pi 执行上下文
+- [x] 以 Pi `agent_settled` 作为执行完成的唯一生命周期判据
+- [x] execution collector 收集执行元数据
+- [x] execution collector 写入现有 execution record（agent=`pi`）
+- [x] 自动请求 ChatGPT REVIEW
+- [x] REVIEW=`PLAN` → FIXING → 下一轮 REVIEW
+- [x] REVIEW=`DONE` → DONE
+- [x] `maxIterations` 超限 → BLOCKED
+- [x] `/p2c-stop`
+- [x] protocol 单测
+- [x] workflow state 单测
+- [x] orchestrator PLAN → EXECUTE → REVIEW → DONE 单测
+- [x] orchestrator REVIEW → PLAN → FIX → REVIEW → DONE 单测
 
-验收场景：
+### 待验收
+
+- [ ] 为当前 Phase 3 分支创建 PR
+- [ ] 运行完整 CI：install + test + typecheck + build
+- [ ] 修复 Phase 3 CI 暴露的问题
+- [ ] 在真实 Pi 环境安装当前分支并执行 `/p2c-status`
+- [ ] 真实 ChatGPT connector + ManualTransport 跑通一次 PLAN → EXECUTE → REVIEW → DONE
+- [ ] 合并 Phase 3 到 `main`
+
+当前分支：
 
 ```text
-/p2c 给一个小型 TypeScript 项目增加参数校验和测试
+feat/phase3-manual-transport
 ```
 
-能够至少完成：
-
-```text
-PLAN → EXECUTE → REVIEW → DONE
-```
+截至本次更新，该分支相对 `main` 前进 **15 commits**。
 
 ---
 
-# Phase 4 — Execution Gate
+## Phase 4 — Execution Gate ⏳
 
-目标：Pi 不得绕过编排层。
+目标：Pi 不得在编排器禁止 mutation 的状态绕过流程。
 
-任务：
+- [ ] 新增 `security-gate.ts`
+- [ ] 注册 Pi `tool_call` hook
+- [ ] PLANNING / PLAN_READY / REVIEWING 阻止 `write` / `edit` / `bash`
+- [ ] PREPARING / DONE / BLOCKED / ERROR 默认 fail closed
+- [ ] EXECUTING / FIXING 恢复 mutation tools
+- [ ] protected paths 基础策略
+- [ ] dangerous command 扩展点
+- [ ] 单元测试覆盖允许/拒绝矩阵
 
-- [ ] 注册 `tool_call` hook
-- [ ] PLANNING/REVIEWING 时禁止 write/edit/bash
-- [ ] EXECUTING/FIXING 时恢复权限
-- [ ] 状态异常 fail closed
-- [ ] 增加 protected paths 基础策略
-- [ ] 增加相关单元测试
-
-验收：
-
-在 REVIEWING 状态手工诱导 Pi 修改文件时，Extension 必须阻止。
+验收：在 REVIEWING 状态诱导 Pi 修改文件时，Extension 必须阻止。
 
 ---
 
-# Phase 5 — Plan Approval
+## Phase 5 — Plan Approval ⏳
 
-目标：支持复杂任务人工批准计划。
+目标：复杂任务可先让用户批准 ChatGPT PLAN。
 
-任务：
-
-- [ ] 增加 `approvalMode`
-- [ ] `auto`
-- [ ] `plan`
+- [ ] `.p2c.json` 中增加 `approvalMode`
+- [ ] `approvalMode=auto`
+- [ ] `approvalMode=plan`
 - [ ] PLAN_READY UI
-- [ ] approve / reject / revise
+- [ ] approve
+- [ ] reject
+- [ ] revise
 - [ ] approved plan 持久化 task/session 信息
-
-验收：
-
-`approvalMode=plan` 时没有用户批准，Pi 无法 edit/write/bash。
+- [ ] 未批准计划时 mutation tools 必须保持关闭
 
 ---
 
-# Phase 6 — PlaywrightTransport
+## Phase 6 — PlaywrightTransport ⏳
 
-目标：去掉人工复制粘贴，实现完整自动化。
+目标：去掉人工复制粘贴，实现 ChatGPT Web 控制面的自动化。
 
-任务：
-
-- [ ] 加入 Playwright 依赖或独立 browser package
+- [ ] Playwright transport
 - [ ] 独立 browser profile
 - [ ] ChatGPT 登录复用
 - [ ] Developer mode / connector setup 自动化
 - [ ] Pairing code 自动输入
 - [ ] conversation URL 持久化
-- [ ] INIT/EXECUTED 消息自动发送
-- [ ] PLAN/DONE/BLOCKED 回复解析
-- [ ] timeout/retry/reconnect 策略
-- [ ] connector 地址变化时 Delete + recreate
-- [ ] Named Tunnel 固定域名时禁止无意义重建 connector
-
-验收：
-
-用户首次登录 ChatGPT 后，后续 `/p2c` 不再要求复制粘贴。
+- [ ] INIT / EXECUTED 自动发送
+- [ ] PLAN / DONE / BLOCKED 自动解析
+- [ ] timeout / retry / reconnect
+- [ ] Quick Tunnel URL 变化时 Delete + recreate connector
+- [ ] Named Tunnel 固定 URL 时禁止无意义重建
+- [ ] browser profile / cookie 不进入 workspace
 
 ---
 
-# Phase 7 — Pi 产品化迁移
+## Phase 7 — Pi 产品化迁移 ⏳
 
 目标：用户看到的项目完全变成 Pi with ChatGPT。
 
-任务：
-
 - [ ] README 全面改写
 - [ ] README.zh-CN 全面改写
-- [ ] docs/architecture.md
-- [ ] docs/protocol.md
-- [ ] docs/security.md
-- [ ] docs/troubleshooting.md
+- [ ] docs/architecture.md 更新 Pi 架构
+- [ ] docs/protocol.md 更新 P2C 协议
+- [ ] docs/security.md 增加 Pi execution gate 威胁模型
+- [ ] docs/troubleshooting.md 更新 Pi 安装/运行问题
 - [ ] `.p2c.json`
 - [ ] `.p2cignore`
-- [ ] `[P2C]` protocol 默认启用
-- [ ] `P2C_STATE_DIR`
+- [x] `P2C_STATE_DIR`
+- [x] Pi 产品名 / `p2c` CLI 基础迁移
+- [x] 新 workspace 使用 Pi connector 名称
+- [x] `[P2C]` protocol 实现（当前 Phase 3 分支；待合并）
 - [ ] state migration command
-- [ ] legacy `c2c` 发 deprecation warning
-- [ ] 发布首个 tag/release
+- [ ] legacy `c2c` deprecation warning
+- [ ] 清理旧 Codex Skill / 自动更新行为
+- [ ] 首个稳定 tag / release
 
 ---
 
-## 17. 安全要求
+## 8. 安全要求
 
-### ChatGPT 侧
-
-必须继续保证：
+### ChatGPT 侧（必须持续保持）
 
 - 只读 MCP
 - 不提供 write/delete/shell/commit/install 工具
 - workspace root 是权限边界
-- 敏感文件规则继续生效
-- git diff 同样走敏感文件过滤
+- sensitive file 规则继续生效
+- git diff 同样经过 sensitive-file filtering
 - token 按 workspace 绑定
+- 控制消息不携带源码/diff/log body
 
 ### Pi 侧
 
-新增要求：
-
-- 只有 EXECUTING/FIXING 状态允许 mutation tools
-- review 阶段冻结 Pi 写操作
+- 只有 EXECUTING / FIXING 状态允许 mutation tools（Phase 4 强制）
+- planning/review 阶段冻结 Pi 写操作
 - browser profile 不进入 workspace
 - ChatGPT cookie/token 不进入 workspace
 - tunnel credentials 继续只存在 OS state dir
 - 不自动 `git pull + pnpm install + build` 更新自身
 
-### 更新策略
-
-取消原 Codex Skill 的“每天自动更新并自动执行安装”。
-
-推荐：
-
-- 用户显式执行更新
-- Pi package 固定 tag / commit
-- release 后再升级
-
 ---
 
-## 18. 测试策略
+## 9. 测试策略
 
-现有测试优先全部保留。
+现有 core 测试全部保留。
 
-新增测试分类：
-
-```text
-tests/pi-extension/
-  state.test.ts
-  orchestrator.test.ts
-  security-gate.test.ts
-  execution-collector.test.ts
-  manual-transport.test.ts
-  protocol.test.ts
-```
-
-浏览器测试：
+Pi / control 层重点覆盖：
 
 ```text
-tests/browser/
-  connector-setup.test.ts
-  session-reuse.test.ts
-  reply-parser.test.ts
+tests/control-protocol.test.ts
+tests/pi-workflow-state.test.ts
+tests/pi-orchestrator.test.ts
+tests/pi-package.test.ts
 ```
 
-必须重点覆盖：
+后续新增：
+
+```text
+tests/security-gate.test.ts
+tests/execution-collector.test.ts
+tests/browser/connector-setup.test.ts
+tests/browser/session-reuse.test.ts
+tests/browser/reply-parser.test.ts
+```
+
+必须持续覆盖：
 
 - 不安装 Codex 时 core 正常运行
+- setup / doctor 不触碰 Codex config
 - planning/review 时 Pi mutation tool 被拒绝
 - iteration 超限
 - ChatGPT BLOCKED
@@ -920,123 +492,25 @@ tests/browser/
 - Quick Tunnel URL 变化
 - Named Tunnel URL 不变化
 - old connector name 兼容
-- `.c2c.json` → `.p2c.json` 兼容
-- old state dir migration
+- `C2C_STATE_DIR` / old state dir 兼容
 
 ---
 
-## 19. 建议的第一个开发分支
+## 10. 下一步执行顺序
 
-第一批代码不要直接在 main 大改，建议：
+当前不再扩 Phase 3 功能，先完成验收闭环：
 
-```text
-feat/pi-adapter-foundation
-```
+1. 给 `feat/phase3-manual-transport` 创建 PR。
+2. 运行 CI：`pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck`、`pnpm build`。
+3. 修复 CI 问题直到全绿。
+4. 做一次真实 Pi + ChatGPT ManualTransport smoke test。
+5. 合并 Phase 3。
+6. 开始 Phase 4 `security-gate.ts`。
 
-该分支只完成：
+第一里程碑的完成定义：
 
-1. Phase 0
-2. Phase 1
-3. Phase 2 骨架
+> **完全不安装 Codex，也能启动 Core；Pi Extension 能加载；ManualTransport 能真实跑通一次完整 PLAN → EXECUTE → REVIEW → DONE。**
 
-第一 PR 不做浏览器自动化。
+第二里程碑：
 
-这样可以先得到一个明确的 checkpoint：
-
-> Core 已去 Codex 化，并且 Pi 能加载扩展。
-
-之后再开：
-
-```text
-feat/p2c-orchestrator
-feat/p2c-browser-transport
-feat/p2c-product-migration
-```
-
----
-
-## 20. 最终 V1 用户体验
-
-安装：
-
-```bash
-pi install git:github.com/lionelzz2025/pi-with-chatgpt@v1.0.0
-```
-
-首次配置：
-
-```text
-/p2c-setup
-```
-
-编码任务：
-
-```text
-/p2c 重构这个认证模块，保持 API 兼容并补齐测试
-```
-
-预期 UI：
-
-```text
-Pi with ChatGPT
-
-✓ Workspace connected
-✓ ChatGPT planner ready
-
-Planning…
-✓ Plan received
-
-Executing with Pi…
-✓ Implementation finished
-
-Reviewing with ChatGPT…
-! 2 issues found
-
-Fixing with Pi…
-✓ Fix applied
-
-Reviewing with ChatGPT…
-✓ Review passed
-✓ Tests passed
-
-Done.
-```
-
----
-
-## 21. 最优先结论
-
-第一原则不是：
-
-```text
-Codex Skill → Pi Skill
-```
-
-而是：
-
-```text
-Codex Skill 驱动
-        ↓
-Pi Extension 驱动
-```
-
-原项目最应该保留的是：
-
-- Bridge
-- MCP
-- OAuth / Pairing
-- Workspace 安全边界
-- Tunnel（包括现有 Named Tunnel）
-- 独立 Review 协议
-
-最应该替换的是：
-
-- Codex in-app browser 依赖
-- Codex sandbox 配置修改
-- 超长 Skill 状态机
-- Codex execution 命名
-- 自动拉取更新行为
-
-第一里程碑应是：
-
-> **完全不安装 Codex，也能启动 Core；Pi Extension 能加载；ManualTransport 能跑通一次完整 PLAN → EXECUTE → REVIEW → DONE。**
+> **Pi 的 mutation 权限由 Extension 状态机强制控制，而不是依赖 prompt 自律。**
