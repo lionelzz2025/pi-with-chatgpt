@@ -4,6 +4,20 @@
   "description": "ChatGPT thinks. Pi works. Use ChatGPT as the planning and review brain while Pi owns local execution.",
   "type": "module",
   "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "chatgpt",
+    "mcp"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "bin": {
     "p2c": "./bin/p2c.js",
     "c2c": "./bin/p2c.js"
