@@ -3,6 +3,7 @@ import {
   connectorAction,
   connectorNameFor,
   DEFAULT_CONNECTOR_NAME,
+  LEGACY_CONNECTOR_NAME,
   mcpUrlFromPublic,
   normalizePublicUrl,
   reclaimUserMessage,
@@ -19,8 +20,8 @@ describe("connectorAction", () => {
 
   it("updates when the old address was reclaimed", () => {
     expect(connectorAction("https://old.trycloudflare.com/mcp", "https://new.trycloudflare.com/mcp")).toBe("update");
-    expect(reclaimUserMessage("Codex with ChatGPT")).toContain("删除");
-    expect(reclaimUserMessage("Codex with ChatGPT")).not.toContain("Reconnect");
+    expect(reclaimUserMessage(LEGACY_CONNECTOR_NAME)).toContain("删除");
+    expect(reclaimUserMessage(LEGACY_CONNECTOR_NAME)).not.toContain("Reconnect");
   });
 
   it("does nothing without a next URL", () => {
@@ -34,10 +35,10 @@ describe("connectorNameFor", () => {
       connectorNameFor({
         workspaceName: "EchoMind",
         workspaceId: "abc123abc123",
-        previousName: "Codex with ChatGPT",
+        previousName: LEGACY_CONNECTOR_NAME,
         hadEndpointBefore: true,
       })
-    ).toBe(DEFAULT_CONNECTOR_NAME);
+    ).toBe(LEGACY_CONNECTOR_NAME);
   });
 
   it("keeps the legacy title when this workspace was used before the name field existed", () => {
@@ -47,17 +48,18 @@ describe("connectorNameFor", () => {
         workspaceId: "abc123abc123",
         hadEndpointBefore: true,
       })
-    ).toBe(DEFAULT_CONNECTOR_NAME);
+    ).toBe(LEGACY_CONNECTOR_NAME);
   });
 
-  it("gives a new workspace its own connector title", () => {
+  it("gives a new workspace its own Pi connector title", () => {
     expect(
       connectorNameFor({
         workspaceName: "Landing",
         workspaceId: "def456def456",
         hadEndpointBefore: false,
       })
-    ).toBe("Codex with ChatGPT · Landing");
+    ).toBe(`${DEFAULT_CONNECTOR_NAME} · Landing`);
+    expect(DEFAULT_CONNECTOR_NAME).toBe("Pi with ChatGPT");
   });
 });
 

@@ -1,11 +1,12 @@
 {
-  "name": "codex-with-chatgpt",
+  "name": "pi-with-chatgpt",
   "version": "0.1.0",
-  "description": "ChatGPT thinks. Codex works. Use ChatGPT as the planning brain while keeping the Codex harness.",
+  "description": "ChatGPT thinks. Pi works. Use ChatGPT as the planning and review brain while Pi owns local execution.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "c2c": "./bin/c2c.js"
+    "p2c": "./bin/p2c.js",
+    "c2c": "./bin/p2c.js"
   },
   "engines": {
     "node": ">=20"
@@ -17,7 +18,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
-  "packageManager": "pnpm@11.24.0",
+  "packageManager": "pnpm@10.15.1",
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
     "commander": "^14.0.0",
