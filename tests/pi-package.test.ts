@@ -16,7 +16,14 @@ function createHarness(options?: { reviewReply?: "DONE" | "FIX" }) {
     if (args.includes("status")) {
       return {
         code: 0,
-        stdout: JSON.stringify({ ok: true, running: true, workspaceName: "demo", port: 48765, publicUrl: null }) + "\n",
+        stdout:
+          JSON.stringify({
+            ok: true,
+            running: true,
+            workspaceName: "demo",
+            port: 48765,
+            publicUrl: "https://demo.example.test",
+          }) + "\n",
         stderr: "",
       };
     }
