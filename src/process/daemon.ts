@@ -8,16 +8,16 @@ import { Workspace } from "../workspace/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Path to the CLI entry, works from dist/ and from tsx dev runs. */
+/** Path to the CLI entry, works from dist/ and from source/git Pi installs. */
 function cliEntry(): { cmd: string; args: string[] } {
   const distEntry = path.resolve(__dirname, "..", "cli", "index.js");
   if (fs.existsSync(distEntry)) {
     return { cmd: process.execPath, args: [distEntry] };
   }
-  // dev fallback: run TypeScript sources through the tsx ESM loader
   const projectRoot = path.resolve(__dirname, "..", "..");
   const tsEntry = path.join(projectRoot, "src", "cli", "index.ts");
-  return { cmd: process.execPath, args: ["--import", "tsx/esm", tsEntry] };
+  const tsxLoader = import.meta.resolve("tsx/esm");
+  return { cmd: process.execPath, args: ["--import", tsxLoader, tsEntry] };
 }
 
 export interface EnsureBridgeResult {
