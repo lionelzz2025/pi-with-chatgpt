@@ -199,8 +199,7 @@ async function dispatchPiExecution(pi: ExtensionAPI, ctx: CommandContext, state:
   }
   const recordCommand = `p2c record --task ${state.taskId} --iteration ${state.iteration} --agent pi --changed-files <count-or-comma-list> --tests <summary> --exit-status <ok|failed|blocked>`;
   await pi.sendUserMessage(
-    `You are the Pi execution layer for Pi with ChatGPT task ${state.taskId}, iteration ${state.iteration}.\n\nExecute the approved ChatGPT instructions below. You may inspect files, edit the workspace, run commands, and run tests as needed. Stay within the current workspace. Do not paste source code, diffs, or raw logs into ChatGPT; the reviewer will inspect them through MCP.\n\nBefore finishing, record an execution summary when practical with:\n${recordCommand}\n\nCHATGPT INSTRUCTIONS:\n${instructions}`,
-    { deliverAs: "followUp" }
+    `You are the Pi execution layer for Pi with ChatGPT task ${state.taskId}, iteration ${state.iteration}.\n\nExecute the approved ChatGPT instructions below. You may inspect files, edit the workspace, run commands, and run tests as needed. Stay within the current workspace. Do not paste source code, diffs, or raw logs into ChatGPT; the reviewer will inspect them through MCP.\n\nBefore finishing, record an execution summary when practical with:\n${recordCommand}\n\nCHATGPT INSTRUCTIONS:\n${instructions}`
   );
   ctx.ui.notify(`Pi execution started for ${state.taskId}.`, "info");
 }
@@ -248,6 +247,9 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         const status = await runP2c<StatusResult>(pi, ctx, ["status"]);
         if (!status.running) {
           throw new Error("Bridge is not running. Run /p2c-setup first so ChatGPT can inspect the workspace through MCP.");
+        }
+        if (!status.publicUrl) {
+          throw new Error("Bridge is running in local mode. Run /p2c-setup without `local` so ChatGPT can reach the MCP endpoint.");
         }
         const state: WorkflowState = {
           taskId: createTaskId(),
