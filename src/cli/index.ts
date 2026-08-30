@@ -27,7 +27,7 @@ import {
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
-import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
+import { ensureSandboxAllowlist } from "../config/sandbox-allow.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
   CHATGPT_DEVELOPER_MODE_URL,
@@ -156,8 +156,8 @@ async function ensureBridgeAndTunnel(
 }
 
 program
-  .name("c2c")
-  .description(`${PRODUCT_NAME} — ChatGPT thinks. Codex works.`)
+  .name("p2c")
+  .description(`${PRODUCT_NAME} — ChatGPT thinks. Pi works.`)
   .version(VERSION, "-v, --version")
   .configureHelp({ sortSubcommands: true });
 
@@ -233,7 +233,6 @@ program
         say("正在连接 ChatGPT…");
         say("");
       }
-      const sandbox = trySandboxAllow();
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
       const connectorName = mcpUrl
         ? persistWorkspaceEndpoint({
@@ -262,7 +261,7 @@ program
             local: mcpUrl === null,
             pairingCode: pairingResult.code,
             pairingExpiresAt: pairingResult.expiresAt,
-            sandbox,
+            sandbox: { ok: true, required: false, legacy: true },
             tunnel: {
               mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
               hostname: tunnelState.hostname ?? null,
@@ -280,7 +279,7 @@ program
       say(`配对码：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分钟内有效）`);
       say("");
       say("下一步：在 ChatGPT 的连接器设置中添加以上地址（OAuth），并在授权页输入配对码。");
-      say("如果你在使用 Codex Skill，这一步会自动完成。");
+      say("如果你在使用 Pi Extension，这一步会由工作流处理。");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -329,7 +328,7 @@ program
     const runtime = await findLiveBridge(workspace.id);
     if (!runtime) {
       if (opts.json) say(JSON.stringify({ ok: false, running: false }));
-      else say("Bridge 未运行。使用 `c2c start` 启动。");
+      else say("Bridge 未运行。使用 `p2c start` 启动。");
       return;
     }
     const info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
@@ -363,25 +362,10 @@ program
     const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
     report.node = { ok: nodeMajor >= 20, detail: `v${process.versions.node}` };
 
-    // Codex sandbox writable_roots (so later chats do not need elevation)
-    if (opts.fix) {
-      const sandbox = trySandboxAllow();
-      if (sandbox.ok) {
-        report.sandbox = { ok: true, detail: sandbox.alreadyAllowed ? "已在白名单" : "已写入白名单" };
-        if (sandbox.added) results.push("已将本地设置目录加入 Codex 沙箱白名单");
-      } else {
-        report.sandbox = { ok: false, detail: sandbox.error };
-      }
-    } else {
-      try {
-        const configPath = getCodexConfigPath();
-        const allowed =
-          fs.existsSync(configPath) && isStateDirAllowlisted(fs.readFileSync(configPath, "utf8"), getStateDir());
-        report.sandbox = allowed ? { ok: true, detail: "已在白名单" } : { ok: false, detail: "未在白名单" };
-      } catch (error) {
-        report.sandbox = { ok: false, detail: (error as Error).message };
-      }
-    }
+    // Pi execution permissions are enforced by the Pi Extension. Codex's
+    // writable_roots configuration is optional legacy compatibility and must
+    // never be a setup side effect or a doctor health gate.
+    report.sandbox = { ok: true, detail: "Pi 模式无需 Codex 沙箱配置" };
 
     // Workspace
     let workspace: Workspace | null = null;
@@ -424,7 +408,7 @@ program
     }
 
     // Tunnel + remote reachability. If this workspace once had a public URL,
-    // a full quit reclaims it — restore a tunnel and tell the Skill to update
+    // a full quit reclaims it — restore a tunnel and tell the client to update
     // the existing ChatGPT connector (never treat that as "local mode").
     const lastEndpoint = workspace ? readLastEndpoint(workspace.id) : null;
     const connectorName = workspace
@@ -434,7 +418,7 @@ program
           previousName: lastEndpoint?.connectorName,
           hadEndpointBefore: Boolean(lastEndpoint),
         })
-      : "Codex with ChatGPT";
+      : PRODUCT_NAME;
     const tunnelState = workspace ? readTunnelState(workspace.id) : null;
     const namedReady = tunnelState ? isNamedTunnelReady(tunnelState) : false;
     let namedRepair: { needed: boolean; userMessage?: string } = { needed: false };
@@ -589,7 +573,7 @@ program
     say("");
     const labels: Record<string, string> = {
       node: "Node.js",
-      sandbox: "Sandbox",
+      sandbox: "Execution permissions",
       workspace: "Workspace",
       bridge: "Bridge",
       mcp: "MCP",
@@ -624,7 +608,7 @@ program
           ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
           : namedRepair.needed
             ? "固定域名还没连上，需要先登录 Cloudflare。"
-            : "仍有问题未解决，可尝试 `c2c restart --tunnel`。"
+            : "仍有问题未解决，可尝试 `p2c restart --tunnel`。"
     );
     if (!allOk || namedRepair.needed) process.exitCode = 1;
   });
@@ -709,11 +693,11 @@ program
     }
   });
 
-// ---------------------------------------------------------------- sandbox-allow (Codex writable_roots, macOS + Windows)
+// ---------------------------------------------------------------- sandbox-allow (legacy Codex compatibility)
 
 program
   .command("sandbox-allow")
-  .description("Add the local settings directory to the Codex sandbox allowlist")
+  .description("Legacy Codex compatibility: add the local settings directory to writable_roots")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
     const result = trySandboxAllow();
@@ -727,8 +711,8 @@ program
       process.exitCode = 1;
       return;
     }
-    if (result.alreadyAllowed) check("沙箱白名单已就绪，后续对话无需再提权");
-    else check("已将本地设置目录加入 Codex 沙箱白名单（后续对话无需再提权）");
+    if (result.alreadyAllowed) check("Codex 兼容沙箱白名单已就绪");
+    else check("已将本地设置目录加入 Codex 兼容沙箱白名单");
   });
 
 // ---------------------------------------------------------------- update-check (once per local day)
@@ -868,10 +852,12 @@ session
 
 program
   .command("record", { hidden: true })
-  .description("Record a Codex execution summary (used by the Skill)")
+  .description("Record an agent execution summary")
   .option("-w, --workspace <path>")
   .requiredOption("--task <id>")
   .requiredOption("--iteration <n>")
+  .option("--agent <kind>", "execution agent kind, e.g. pi or codex")
+  .option("--model <model>", "optional execution model identifier")
   .option("--changed-files <filesOrCount>", "comma-separated files or a count", "0")
   .option("--tests <summary>", "e.g. '27 passed'")
   .option("--exit-status <status>", "ok | failed | blocked", "ok")
@@ -881,6 +867,8 @@ program
       workspace?: string;
       task: string;
       iteration: string;
+      agent?: string;
+      model?: string;
       changedFiles: string;
       tests?: string;
       exitStatus: string;
@@ -893,6 +881,7 @@ program
       appendExecutionRecord(workspace.id, {
         taskId: opts.task,
         iteration: parseInt(opts.iteration, 10),
+        agent: opts.agent ? { kind: opts.agent, model: opts.model } : undefined,
         changedFiles: changed,
         tests: opts.tests ?? null,
         exitStatus: opts.exitStatus,
