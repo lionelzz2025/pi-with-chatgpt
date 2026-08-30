@@ -12,7 +12,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/pi-with-chatgpt/index.ts"
     ],
     "skills": [
       "./skills"
