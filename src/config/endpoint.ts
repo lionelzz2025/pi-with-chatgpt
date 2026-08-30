@@ -6,7 +6,8 @@ export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
 export const CHATGPT_CREATE_CONNECTOR_URL =
   "https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins";
 
-export const DEFAULT_CONNECTOR_NAME = "Codex with ChatGPT";
+export const DEFAULT_CONNECTOR_NAME = "Pi with ChatGPT";
+export const LEGACY_CONNECTOR_NAME = "Codex with ChatGPT";
 
 export interface LastEndpoint {
   workspaceId: string;
@@ -41,7 +42,7 @@ export function mcpUrlFromPublic(publicUrl: string | null | undefined): string |
   return `${base}/mcp`;
 }
 
-/** What the Skill should do to THIS workspace's ChatGPT connector.
+/** What the client should do to THIS workspace's ChatGPT connector.
  *  `update` means the public address changed: Delete the old connector
  *  in ChatGPT, then create it again. Never click Reconnect (the old
  *  URL is dead and hangs on "This site cannot be reached"). */
@@ -61,8 +62,8 @@ export function sanitizeConnectorLabel(name: string, workspaceId: string): strin
 
 /**
  * Same workspace keeps one connector title forever.
- * A workspace already recorded without a title stays on the original
- * "Codex with ChatGPT" name. A new workspace gets a distinct title.
+ * A workspace already recorded without a title stays on the legacy
+ * "Codex with ChatGPT" name. A new workspace uses the Pi product name.
  */
 export function connectorNameFor(opts: {
   workspaceName: string;
@@ -71,7 +72,7 @@ export function connectorNameFor(opts: {
   hadEndpointBefore: boolean;
 }): string {
   if (opts.previousName?.trim()) return opts.previousName.trim();
-  if (opts.hadEndpointBefore) return DEFAULT_CONNECTOR_NAME;
+  if (opts.hadEndpointBefore) return LEGACY_CONNECTOR_NAME;
   return `${DEFAULT_CONNECTOR_NAME} · ${sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId)}`;
 }
 
