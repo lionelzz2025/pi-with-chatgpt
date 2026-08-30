@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import registerPiWithChatGPT from "../extensions/index.js";
+import registerPiWithChatGPT from "../extensions/pi-with-chatgpt/index.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -14,13 +14,13 @@ describe("Pi package manifest", () => {
     };
 
     expect(pkg.keywords).toContain("pi-package");
-    expect(pkg.pi?.extensions).toContain("./extensions");
+    expect(pkg.pi?.extensions).toContain("./extensions/pi-with-chatgpt/index.ts");
     expect(pkg.pi?.skills).toContain("./skills");
   });
 });
 
 describe("Pi extension commands", () => {
-  it("registers p2c status and setup and routes them through the package CLI", async () => {
+  it("registers workflow/setup/status/stop commands and routes setup/status through the package CLI", async () => {
     const commands: Record<string, { handler(args: string, ctx: any): Promise<void> | void }> = {};
     const notifications: Array<{ message: string; level?: string }> = [];
     const exec = vi.fn(async (_command: string, args: string[]) => {
@@ -51,16 +51,20 @@ describe("Pi extension commands", () => {
       registerCommand(name: string, options: { handler(args: string, ctx: any): Promise<void> | void }) {
         commands[name] = options;
       },
+      on: vi.fn(),
+      sendUserMessage: vi.fn(),
     } as any);
 
-    expect(Object.keys(commands).sort()).toEqual(["p2c-setup", "p2c-status"]);
+    expect(Object.keys(commands).sort()).toEqual(["p2c", "p2c-setup", "p2c-status", "p2c-stop"]);
 
     const ctx = {
       cwd: "/workspace/demo",
+      hasUI: true,
       ui: {
         notify(message: string, level?: string) {
           notifications.push({ message, level });
         },
+        editor: vi.fn(),
       },
     };
 
