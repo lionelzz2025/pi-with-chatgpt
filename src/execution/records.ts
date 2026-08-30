@@ -3,13 +3,17 @@ import path from "node:path";
 import { ensureDir, getStateDir } from "../config/paths.js";
 
 /**
- * Lightweight execution records written by the Codex harness after each
- * iteration (via `c2c record`). ChatGPT reads them through the
- * `execution_summary` and `test_status` MCP tools.
+ * Lightweight execution records written by the local execution agent after
+ * each iteration. ChatGPT reads them through the `execution_summary` and
+ * `test_status` MCP tools.
  */
 export interface ExecutionRecord {
   taskId: string;
   iteration: number;
+  agent?: {
+    kind: "pi" | "codex" | string;
+    model?: string;
+  };
   changedFiles: string[] | number;
   tests: string | null;
   exitStatus: "ok" | "failed" | "blocked" | string;
