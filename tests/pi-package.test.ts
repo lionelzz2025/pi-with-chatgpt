@@ -5,14 +5,33 @@ import { describe, expect, it, vi } from "vitest";
 import registerPiWithChatGPT from "../extensions/index.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+let harnessIndex = 0;
 
-function createHarness(options?: { reviewReply?: "DONE" | "FIX" }) {
+interface HarnessOptions {
+  reviewReply?: "DONE" | "FIX";
+  cwd?: string;
+  initialEntries?: Array<{ type: string; customType: string; data: unknown }>;
+}
+
+function createHarness(options: HarnessOptions = {}) {
   const commands: Record<string, { handler(args: string, ctx: any): Promise<void> | void }> = {};
   const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
   const notifications: Array<{ message: string; level?: string }> = [];
   const sentMessages: string[] = [];
-  const reviewReply = options?.reviewReply ?? "DONE";
-  const exec = vi.fn(async (_command: string, args: string[]) => {
+  const sessionEntries = [...(options.initialEntries ?? [])];
+  const reviewReply = options.reviewReply ?? "DONE";
+  const cwd = options.cwd ?? `/workspace/demo-${++harnessIndex}`;
+  const exec = vi.fn(async (command: string, args: string[]) => {
+    if (command === "git") {
+      return {
+        code: 0,
+        stdout: "1 .M N... 100644 100644 100644 abc def src/a.ts\0? src/new.ts\0",
+        stderr: "",
+      };
+    }
+    if (args.includes("record")) {
+      return { code: 0, stdout: "✓ 已记录执行摘要\n", stderr: "" };
+    }
     if (args.includes("status")) {
       return {
         code: 0,
@@ -43,17 +62,23 @@ function createHarness(options?: { reviewReply?: "DONE" | "FIX" }) {
   });
   const editor = vi.fn(async (title: string, prefilled: string) => {
     const taskId = prefilled.match(/^TASK_ID:\s*(\S+)$/m)?.[1] ?? "unknown";
+    const iteration = prefilled.match(/^ITERATION:\s*(\d+)$/m)?.[1] ?? "0";
     if (title.includes("planning")) {
-      return `[P2C]\nSTATE: PLAN\nTASK_ID: ${taskId}\nITERATION: 0\n\nPLAN:\n1. Edit the implementation.\n2. Run tests.`;
+      return `[P2C]\nSTATE: PLAN\nTASK_ID: ${taskId}\nITERATION: ${iteration}\n\nPLAN:\n1. Edit the implementation.\n2. Run tests.`;
     }
     if (reviewReply === "FIX") {
-      return `[P2C]\nSTATE: FIX\nTASK_ID: ${taskId}\nITERATION: 0\n\nFIX:\nAddress the failing edge case and rerun tests.`;
+      return `[P2C]\nSTATE: FIX\nTASK_ID: ${taskId}\nITERATION: ${iteration}\n\nFIX:\nAddress the failing edge case and rerun tests.`;
     }
-    return `[P2C]\nSTATE: DONE\nTASK_ID: ${taskId}\nITERATION: 0\n\nSUMMARY:\nImplementation and tests look good.`;
+    return `[P2C]\nSTATE: DONE\nTASK_ID: ${taskId}\nITERATION: ${iteration}\n\nSUMMARY:\nImplementation and tests look good.`;
   });
   const confirm = vi.fn(async () => true);
   const ctx = {
-    cwd: "/workspace/demo",
+    cwd,
+    sessionManager: {
+      getBranch() {
+        return sessionEntries;
+      },
+    },
     ui: {
       notify(message: string, level?: string) {
         notifications.push({ message, level });
@@ -76,9 +101,12 @@ function createHarness(options?: { reviewReply?: "DONE" | "FIX" }) {
     async sendUserMessage(message: string) {
       sentMessages.push(message);
     },
+    appendEntry(customType: string, data: unknown) {
+      sessionEntries.push({ type: "custom", customType, data });
+    },
   } as any);
 
-  return { commands, handlers, notifications, sentMessages, exec, editor, confirm, ctx };
+  return { commands, handlers, notifications, sentMessages, sessionEntries, exec, editor, confirm, ctx };
 }
 
 describe("Pi package manifest", () => {
@@ -116,28 +144,51 @@ describe("Pi extension commands", () => {
     expect(exec).toHaveBeenCalledTimes(2);
     const statusArgs = exec.mock.calls[0][1];
     expect(statusArgs[0]).toMatch(/bin[\\/]p2c\.js$/);
-    expect(statusArgs).toEqual(expect.arrayContaining(["status", "--workspace", "/workspace/demo", "--json"]));
+    expect(statusArgs).toEqual(expect.arrayContaining(["status", "--workspace", ctx.cwd, "--json"]));
 
     const setupArgs = exec.mock.calls[1][1];
     expect(setupArgs).toEqual(
-      expect.arrayContaining(["setup", "--no-tunnel", "--workspace", "/workspace/demo", "--json"])
+      expect.arrayContaining(["setup", "--no-tunnel", "--workspace", ctx.cwd, "--json"])
     );
     expect(notifications.some((item) => item.message.includes("Pairing code: ABC-123"))).toBe(true);
   });
 
-  it("runs PLAN → EXECUTING → REVIEWING → DONE and gates local mutations during review", async () => {
-    const { commands, handlers, sentMessages, editor, ctx } = createHarness();
+  it("runs PLAN → EXECUTING → REVIEWING → DONE, records evidence, and gates review mutations", async () => {
+    const { commands, handlers, sentMessages, editor, exec, sessionEntries, ctx } = createHarness();
 
     await commands["p2c"].handler("Implement manual workflow orchestration", ctx);
     expect(editor).toHaveBeenCalledTimes(1);
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).toContain("CHATGPT INSTRUCTIONS");
     expect(sentMessages[0]).toContain("Edit the implementation");
+    expect(sentMessages[0]).toContain("records execution evidence automatically");
 
     const executingGate = await handlers.tool_call[0]({ toolName: "edit" }, ctx);
     expect(executingGate).toBeUndefined();
 
+    await handlers.tool_result[0](
+      { toolName: "bash", input: { command: "pnpm test" }, isError: false, content: [] },
+      ctx
+    );
     await handlers.agent_end[0]({}, ctx);
+
+    const recordCall = exec.mock.calls.find((call) => call[1].includes("record"));
+    expect(recordCall).toBeTruthy();
+    expect(recordCall?.[1]).toEqual(
+      expect.arrayContaining([
+        "record",
+        "--agent",
+        "pi",
+        "--changed-files",
+        "2",
+        "--tests",
+        "passed (pnpm test)",
+        "--exit-status",
+        "ok",
+      ])
+    );
+    expect(sessionEntries.some((entry) => (entry.data as any)?.state?.phase === "REVIEWING")).toBe(true);
+
     const reviewGate = await handlers.tool_call[0]({ toolName: "edit" }, ctx);
     expect(reviewGate).toMatchObject({ block: true });
 
@@ -166,5 +217,67 @@ describe("Pi extension commands", () => {
     await handlers.agent_end[0]({}, ctx);
     const secondReviewGate = await handlers.tool_call[0]({ toolName: "write" }, ctx);
     expect(secondReviewGate).toMatchObject({ block: true });
+  });
+
+  it("restores an active workflow from Pi session entries after reload", async () => {
+    const cwd = "/workspace/restored";
+    const initialEntries = [
+      {
+        type: "custom",
+        customType: "p2c-workflow-v1",
+        data: {
+          cwd,
+          state: {
+            taskId: "p2c_restore",
+            workspaceName: "restored",
+            goal: "Restore me",
+            iteration: 1,
+            phase: "REVIEWING",
+            plan: "Implement it",
+          },
+        },
+      },
+    ];
+    const { commands, handlers, notifications, ctx } = createHarness({ cwd, initialEntries });
+
+    await handlers.session_start[0]({}, ctx);
+    const gate = await handlers.tool_call[0]({ toolName: "edit" }, ctx);
+    expect(gate).toMatchObject({ block: true });
+
+    await commands["p2c-status"].handler("", ctx);
+    expect(notifications.some((item) => item.message.includes("Restored Pi with ChatGPT workflow"))).toBe(true);
+    expect(notifications.some((item) => item.message.includes("Workflow: REVIEWING · p2c_restore"))).toBe(true);
+  });
+
+  it("stops after the configured execution-iteration safety limit", async () => {
+    const cwd = "/workspace/max-iterations";
+    const initialEntries = [
+      {
+        type: "custom",
+        customType: "p2c-workflow-v1",
+        data: {
+          cwd,
+          state: {
+            taskId: "p2c_max",
+            workspaceName: "max",
+            goal: "Do not loop forever",
+            iteration: 2,
+            phase: "REVIEWING",
+            plan: "Initial plan",
+          },
+        },
+      },
+    ];
+    const { commands, handlers, notifications, sentMessages, ctx } = createHarness({
+      cwd,
+      initialEntries,
+      reviewReply: "FIX",
+    });
+
+    await handlers.session_start[0]({}, ctx);
+    await commands["p2c-review"].handler("", ctx);
+
+    expect(sentMessages).toHaveLength(0);
+    expect(notifications.some((item) => item.message.includes("3-iteration safety limit"))).toBe(true);
   });
 });
