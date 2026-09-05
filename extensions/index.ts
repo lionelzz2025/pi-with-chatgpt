@@ -354,6 +354,19 @@ async function recordExecution(pi: ExtensionAPI, ctx: CommandContext, state: Wor
   }
 }
 
+async function resolveApprovalMode(pi: ExtensionAPI, ctx: CommandContext): Promise<ApprovalMode> {
+  try {
+    const result = await runP2c<ApprovalModeResult>(pi, ctx, ["config", "approval-mode"]);
+    return result.approvalMode === "auto" ? "auto" : "plan";
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not read approval mode; using safe default 'plan': ${(error as Error).message}`,
+      "warning"
+    );
+    return "plan";
+  }
+}
+
 async function dispatchPiExecution(
   pi: ExtensionAPI,
   ctx: CommandContext,
