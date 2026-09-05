@@ -27,6 +27,7 @@ import {
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
+import { readApprovalMode, writeApprovalMode, type ApprovalMode } from "../config/workflow.js";
 import { ensureSandboxAllowlist } from "../config/sandbox-allow.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
@@ -649,6 +650,42 @@ program
       new AuthStore(workspace.id).revokeAll();
     }
     check("已断开 ChatGPT 对当前项目的访问（所有令牌已吊销）");
+  });
+
+// ---------------------------------------------------------------- config
+
+const configCmd = program.command("config").description("Manage workspace-level Pi with ChatGPT preferences");
+
+configCmd
+  .command("approval-mode")
+  .description("Get or set whether ChatGPT plans require approval before Pi executes them")
+  .argument("[mode]", "plan or auto")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action((mode: string | undefined, opts: { workspace?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      let preference;
+      if (mode !== undefined) {
+        const normalized = mode.trim().toLowerCase();
+        if (normalized !== "plan" && normalized !== "auto") {
+          throw new Error("approval mode must be 'plan' or 'auto'");
+        }
+        preference = writeApprovalMode(workspace.id, normalized as ApprovalMode);
+      } else {
+        preference = readApprovalMode(workspace.id);
+      }
+
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, ...preference }));
+      } else {
+        say(
+          `Approval mode: ${preference.approvalMode}${preference.stored ? "" : " (default)"}`
+        );
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
   });
 
 // ---------------------------------------------------------------- logs / workspace / record
