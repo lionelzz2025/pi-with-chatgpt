@@ -43,6 +43,10 @@ The old Codex `writable_roots` mechanism is not a Pi security model. For Pi, the
 
 `auto` changes one transition: `PLAN_READY → EXECUTING`. It does not weaken the phase mutation gate, bypass ChatGPT review, or change the iteration safety limit. Keeping those concerns separate makes later browser automation easier to reason about.
 
+### Transport must stay behind a narrow exchange interface
+
+The orchestrator only needs a small control-plane primitive: send one structured request and receive one structured reply. Moving manual editor behavior behind `ChatGptTransport.exchange()` confirms that browser automation does not need to own workflow state, approval policy, execution evidence, or review-loop logic. Those remain extension responsibilities.
+
 ## Current limitations
 
 - Workflow persistence is scoped to Pi session entries; starting an unrelated fresh Pi session does not automatically import a previous workflow.

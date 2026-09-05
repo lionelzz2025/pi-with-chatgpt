@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ManualTransport } from "../src/control/transports/manual.js";
 
 interface ExecResult {
   stdout: string;
@@ -353,21 +354,6 @@ async function recordExecution(pi: ExtensionAPI, ctx: CommandContext, state: Wor
   }
 }
 
-async function manualRound(ctx: CommandContext, title: string, outbound: string): Promise<string> {
-  if (!ctx.ui.editor) {
-    throw new Error("Manual ChatGPT transport requires Pi's interactive editor UI.");
-  }
-  const reply = await ctx.ui.editor(
-    `${title} — copy this request to ChatGPT, then replace it with ChatGPT's reply and submit`,
-    outbound
-  );
-  const normalized = reply?.trim() ?? "";
-  if (!normalized || normalized === outbound.trim()) {
-    throw new Error("No ChatGPT reply was captured. Paste ChatGPT's control response into the editor before submitting.");
-  }
-  return normalized;
-}
-
 async function resolveApprovalMode(pi: ExtensionAPI, ctx: CommandContext): Promise<ApprovalMode> {
   try {
     const result = await runP2c<ApprovalModeResult>(pi, ctx, ["config", "approval-mode"]);
@@ -476,7 +462,10 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
           phase: "PLANNING",
         };
         saveWorkflow(pi, ctx, state);
-        const reply = await manualRound(ctx, "ChatGPT planning round", buildPlanRequest(state));
+        const reply = await new ManualTransport(ctx.ui.editor).exchange({
+          title: "ChatGPT planning round",
+          outbound: buildPlanRequest(state),
+        });
         parseControlReply(reply, state, ["PLAN"]);
         state.plan = extractSection(reply, "PLAN");
         delete state.error;
@@ -523,7 +512,10 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       try {
         const state = requireWorkflow(ctx.cwd, "REVIEWING");
-        const reply = await manualRound(ctx, "ChatGPT review round", buildReviewRequest(state));
+        const reply = await new ManualTransport(ctx.ui.editor).exchange({
+          title: "ChatGPT review round",
+          outbound: buildReviewRequest(state),
+        });
         const reviewState = parseControlReply(reply, state, ["FIX", "DONE"]);
         state.lastReview = reply;
         delete state.error;
