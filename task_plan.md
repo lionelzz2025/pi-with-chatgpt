@@ -657,15 +657,15 @@ Review passed
 
 任务：
 
-- [ ] `package.json` name 改为 `pi-with-chatgpt`
-- [ ] description 改为 Pi 文案
-- [ ] 新增 `bin/p2c.js`
-- [ ] 保留 `c2c` alias
-- [ ] `src/version.ts` 产品名改为 `Pi with ChatGPT`
-- [ ] endpoint 新 workspace 默认 connector 改为 `Pi with ChatGPT · <workspace>`
-- [ ] 保持已有 connectorName 兼容
-- [ ] README 增加 Pi 改造状态说明
-- [ ] 所有测试继续通过
+- [x] `package.json` name 改为 `pi-with-chatgpt`
+- [x] description 改为 Pi 文案
+- [x] 新增 `bin/p2c.js`
+- [x] 保留 `c2c` alias
+- [x] `src/version.ts` 产品名改为 `Pi with ChatGPT`
+- [x] endpoint 新 workspace 默认 connector 改为 `Pi with ChatGPT · <workspace>`
+- [x] 保持已有 connectorName 兼容
+- [x] README 增加 Pi 改造状态说明
+- [x] 所有测试继续通过
 
 验收：
 
@@ -685,14 +685,14 @@ p2c setup --no-tunnel
 
 任务：
 
-- [ ] `doctor` 不再把 Codex sandbox 作为硬性健康条件
-- [ ] `setup` 不自动调用 Codex sandbox allow
-- [ ] `sandbox-allow` 标记 legacy
-- [ ] 去除 CLI 对 `~/.codex/config.toml` 的默认依赖
-- [ ] execution 文案去 Codex 化
-- [ ] `src/config/paths.ts` 支持 `P2C_STATE_DIR`
-- [ ] 增加新 state dir，兼容旧 state dir
-- [ ] 测试覆盖“没有 ~/.codex 也能 setup/doctor”
+- [x] `doctor` 不再把 Codex sandbox 作为硬性健康条件
+- [x] `setup` 不自动调用 Codex sandbox allow
+- [x] `sandbox-allow` 标记 legacy
+- [x] 去除 CLI 对 `~/.codex/config.toml` 的默认依赖
+- [x] execution 文案去 Codex 化
+- [x] `src/config/paths.ts` 支持 `P2C_STATE_DIR`
+- [x] 增加新 state dir，兼容旧 state dir
+- [x] 测试覆盖“没有 ~/.codex 也能 setup/doctor”
 
 验收：
 
@@ -711,13 +711,13 @@ p2c doctor
 
 任务：
 
-- [ ] 新增 `extensions/pi-with-chatgpt/index.ts`
-- [ ] 新增 `skills/pi-with-chatgpt/SKILL.md`
-- [ ] 配置 package metadata 供 Pi 安装
-- [ ] 注册 `/p2c-status`
-- [ ] 注册 `/p2c-setup`
-- [ ] 能从 Extension 调用本地 p2c core
-- [ ] Pi 启动后能识别当前 workspace
+- [x] 新增 `extensions/pi-with-chatgpt/index.ts`
+- [x] 新增 `skills/pi-with-chatgpt/SKILL.md`
+- [x] 配置 package metadata 供 Pi 安装
+- [x] 注册 `/p2c-status`
+- [x] 注册 `/p2c-setup`
+- [x] 能从 Extension 调用本地 p2c core
+- [x] Pi 启动后能识别当前 workspace
 
 验收：
 
@@ -739,17 +739,17 @@ pi install git:github.com/lionelzz2025/pi-with-chatgpt
 
 任务：
 
-- [ ] 实现 WorkflowState
-- [ ] 实现 Orchestrator
-- [ ] 实现 ManualTransport
-- [ ] `/p2c <goal>` 请求 ChatGPT PLAN
-- [ ] PLAN 注入 Pi 当前执行上下文
-- [ ] Pi 执行
-- [ ] execution collector 写 record
-- [ ] 请求 ChatGPT REVIEW
-- [ ] REVIEW=PLAN 时进入 FIXING
-- [ ] REVIEW=DONE 时结束
-- [ ] maxIterations 生效
+- [x] 实现 WorkflowState
+- [x] 实现 Orchestrator
+- [x] 实现 ManualTransport
+- [x] `/p2c <goal>` 请求 ChatGPT PLAN
+- [x] PLAN 注入 Pi 当前执行上下文
+- [x] Pi 执行
+- [x] execution collector 写 record
+- [x] 请求 ChatGPT REVIEW
+- [x] REVIEW=PLAN 时进入 FIXING
+- [x] REVIEW=DONE 时结束
+- [x] maxIterations 生效
 
 验收场景：
 
@@ -771,12 +771,12 @@ PLAN → EXECUTE → REVIEW → DONE
 
 任务：
 
-- [ ] 注册 `tool_call` hook
-- [ ] PLANNING/REVIEWING 时禁止 write/edit/bash
-- [ ] EXECUTING/FIXING 时恢复权限
+- [x] 注册 `tool_call` hook
+- [x] PLANNING/REVIEWING 时禁止 write/edit/bash
+- [x] EXECUTING/FIXING 时恢复权限
 - [ ] 状态异常 fail closed
 - [ ] 增加 protected paths 基础策略
-- [ ] 增加相关单元测试
+- [x] 增加相关单元测试
 
 验收：
 
@@ -790,12 +790,12 @@ PLAN → EXECUTE → REVIEW → DONE
 
 任务：
 
-- [ ] 增加 `approvalMode`
-- [ ] `auto`
-- [ ] `plan`
-- [ ] PLAN_READY UI
+- [x] 增加 `approvalMode`
+- [x] `auto`
+- [x] `plan`
+- [x] PLAN_READY UI
 - [ ] approve / reject / revise
-- [ ] approved plan 持久化 task/session 信息
+- [x] approved plan 持久化 task/session 信息
 
 验收：
 

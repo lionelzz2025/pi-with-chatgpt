@@ -6,7 +6,7 @@ Last updated: 2026-08-30
 
 The repository has moved from a Codex-specific fork to an installable Pi package while preserving the existing secure Bridge/MCP/OAuth/Pairing/Tunnel core.
 
-Current milestone: **Phase 3 — ManualTransport V0**, with the baseline **Phase 4 execution gate** already implemented.
+Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport V0 and the baseline Phase 4 execution gate already implemented.
 
 ## Completed
 
@@ -51,11 +51,21 @@ Current milestone: **Phase 3 — ManualTransport V0**, with the baseline **Phase
 - Add a three-execution-iteration safety limit to prevent an endless `FIX` loop.
 - Add regression tests for session restore, evidence collection, mutation gating, happy path, fix loop, and iteration limit.
 
+## Completed in the approval-mode checkpoint
+
+- Add workspace-scoped `approvalMode` with a fail-safe default of `plan`.
+- Persist the preference under the P2C OS state directory instead of writing config into the source workspace.
+- Add `p2c config approval-mode [plan|auto]`.
+- Add Pi command `/p2c-mode [plan|auto]`.
+- In `auto` mode, move from `PLAN_READY` directly into Pi execution without a confirmation prompt.
+- Keep `/p2c-approve` and interactive confirmation behavior for `plan` mode.
+- Add CLI and mocked Pi extension regression coverage for persisted and automatic approval behavior.
+
 ## Next
 
-1. Add `approvalMode` configuration (`plan` vs `auto`) and persist the selected policy.
-2. Strengthen the execution gate with protected paths, dangerous-command confirmation, and explicit fail-closed behavior for abnormal states.
-3. Improve execution evidence beyond heuristic test-command detection, without storing raw logs or secrets.
-4. Implement automated ChatGPT transport (Playwright or another browser control layer) behind the same control protocol.
-5. Finish P2C naming migration for config/ignore files and remaining docs while keeping backwards compatibility.
-6. Add real Pi integration/e2e coverage in addition to the mocked extension tests.
+1. Strengthen the execution gate with protected paths, dangerous-command confirmation, and explicit fail-closed behavior for abnormal states.
+2. Improve execution evidence beyond heuristic test-command detection, without storing raw logs or secrets.
+3. Introduce a transport interface and implement automated ChatGPT transport (Playwright or another browser control layer) behind the same control protocol.
+4. Finish P2C naming migration for config/ignore files and remaining docs while keeping backwards compatibility.
+5. Add real Pi integration/e2e coverage in addition to the mocked extension tests.
+6. Extend plan approval with explicit reject/revise UX if needed after automated transport lands.

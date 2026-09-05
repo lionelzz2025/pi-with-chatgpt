@@ -9,6 +9,7 @@ let harnessIndex = 0;
 
 interface HarnessOptions {
   reviewReply?: "DONE" | "FIX";
+  approvalMode?: "plan" | "auto";
   cwd?: string;
   initialEntries?: Array<{ type: string; customType: string; data: unknown }>;
 }
@@ -20,6 +21,7 @@ function createHarness(options: HarnessOptions = {}) {
   const sentMessages: string[] = [];
   const sessionEntries = [...(options.initialEntries ?? [])];
   const reviewReply = options.reviewReply ?? "DONE";
+  const approvalMode = options.approvalMode ?? "plan";
   const cwd = options.cwd ?? `/workspace/demo-${++harnessIndex}`;
   const exec = vi.fn(async (command: string, args: string[]) => {
     if (command === "git") {
@@ -42,6 +44,20 @@ function createHarness(options: HarnessOptions = {}) {
             workspaceName: "demo",
             port: 48765,
             publicUrl: "https://demo.example.test",
+          }) + "\n",
+        stderr: "",
+      };
+    }
+    if (args.includes("config") && args.includes("approval-mode")) {
+      const modeIndex = args.indexOf("approval-mode") + 1;
+      const requested = args[modeIndex] && !args[modeIndex].startsWith("--") ? args[modeIndex] : undefined;
+      return {
+        code: 0,
+        stdout:
+          JSON.stringify({
+            ok: true,
+            approvalMode: requested === "auto" || requested === "plan" ? requested : approvalMode,
+            stored: requested ? true : approvalMode !== "plan",
           }) + "\n",
         stderr: "",
       };
@@ -128,6 +144,7 @@ describe("Pi extension commands", () => {
     expect(Object.keys(commands).sort()).toEqual([
       "p2c",
       "p2c-approve",
+      "p2c-mode",
       "p2c-review",
       "p2c-setup",
       "p2c-status",
@@ -151,6 +168,33 @@ describe("Pi extension commands", () => {
       expect.arrayContaining(["setup", "--no-tunnel", "--workspace", ctx.cwd, "--json"])
     );
     expect(notifications.some((item) => item.message.includes("Pairing code: ABC-123"))).toBe(true);
+  });
+
+  it("gets and sets approval mode through the package-local CLI", async () => {
+    const { commands, notifications, exec, ctx } = createHarness();
+
+    await commands["p2c-mode"].handler("", ctx);
+    await commands["p2c-mode"].handler("auto", ctx);
+
+    const configCalls = exec.mock.calls.filter((call) => call[1].includes("approval-mode"));
+    expect(configCalls).toHaveLength(2);
+    expect(configCalls[0][1]).toEqual(
+      expect.arrayContaining(["config", "approval-mode", "--workspace", ctx.cwd, "--json"])
+    );
+    expect(configCalls[1][1]).toEqual(
+      expect.arrayContaining(["config", "approval-mode", "auto", "--workspace", ctx.cwd, "--json"])
+    );
+    expect(notifications.some((item) => item.message.includes("Plan approval mode: auto"))).toBe(true);
+  });
+
+  it("auto approval starts Pi execution without prompting", async () => {
+    const { commands, sentMessages, confirm, ctx } = createHarness({ approvalMode: "auto" });
+
+    await commands["p2c"].handler("Execute automatically after planning", ctx);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("Execute the approved ChatGPT instructions");
   });
 
   it("runs PLAN → EXECUTING → REVIEWING → DONE, records evidence, and gates review mutations", async () => {

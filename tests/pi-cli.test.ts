@@ -28,6 +28,46 @@ afterEach(() => {
   for (const dir of cleanupDirs.splice(0)) cleanup(dir);
 });
 
+describe("p2c approval mode config", () => {
+  it("defaults to plan and persists auto per workspace", () => {
+    const root = makeTmpDir("p2c-approval");
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(workspace, { recursive: true });
+
+    const env = {
+      ...process.env,
+      P2C_STATE_DIR: stateDir,
+      C2C_STATE_DIR: "",
+    };
+
+    const initial = runCli(["config", "approval-mode", "--json", "--workspace", workspace], env);
+    expect(initial.status, initial.stderr || initial.stdout).toBe(0);
+    expect(parseLastJson(initial.stdout)).toMatchObject({
+      ok: true,
+      approvalMode: "plan",
+      stored: false,
+    });
+
+    const setAuto = runCli(["config", "approval-mode", "auto", "--json", "--workspace", workspace], env);
+    expect(setAuto.status, setAuto.stderr || setAuto.stdout).toBe(0);
+    expect(parseLastJson(setAuto.stdout)).toMatchObject({
+      ok: true,
+      approvalMode: "auto",
+      stored: true,
+    });
+
+    const persisted = runCli(["config", "approval-mode", "--json", "--workspace", workspace], env);
+    expect(persisted.status, persisted.stderr || persisted.stdout).toBe(0);
+    expect(parseLastJson(persisted.stdout)).toMatchObject({
+      ok: true,
+      approvalMode: "auto",
+      stored: true,
+    });
+  });
+});
+
 describe("p2c without Codex", () => {
   it("runs setup and doctor without creating a Codex config", () => {
     const root = makeTmpDir("p2c-cli");
