@@ -20,6 +20,7 @@ type WorkflowPhase =
   | "ERROR";
 
 type ControlReplyState = "PLAN" | "FIX" | "DONE";
+type ApprovalMode = "plan" | "auto";
 
 interface WorkflowState {
   taskId: string;
@@ -108,6 +109,12 @@ interface SetupResult {
   local?: boolean;
   pairingCode?: string;
   pairingExpiresAt?: number;
+}
+
+interface ApprovalModeResult {
+  ok: boolean;
+  approvalMode: ApprovalMode;
+  stored: boolean;
 }
 
 interface ExecutionObservation {
@@ -361,6 +368,19 @@ async function manualRound(ctx: CommandContext, title: string, outbound: string)
   return normalized;
 }
 
+async function resolveApprovalMode(pi: ExtensionAPI, ctx: CommandContext): Promise<ApprovalMode> {
+  try {
+    const result = await runP2c<ApprovalModeResult>(pi, ctx, ["config", "approval-mode"]);
+    return result.approvalMode === "auto" ? "auto" : "plan";
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not read approval mode; using safe default 'plan': ${(error as Error).message}`,
+      "warning"
+    );
+    return "plan";
+  }
+}
+
 async function dispatchPiExecution(
   pi: ExtensionAPI,
   ctx: CommandContext,
@@ -462,6 +482,13 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         delete state.error;
         setPhase(pi, ctx, state, "PLAN_READY");
 
+        const approvalMode = await resolveApprovalMode(pi, ctx);
+        if (approvalMode === "auto") {
+          ctx.ui.notify("Approval mode is auto; starting Pi execution.", "info");
+          await approvePlan(pi, ctx, state);
+          return;
+        }
+
         const approved = ctx.ui.confirm
           ? await ctx.ui.confirm("Execute ChatGPT plan?", `Task ${state.taskId} is ready for Pi execution.`)
           : false;
@@ -537,6 +564,30 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
       setWorkflowStatus(ctx);
       persistWorkflow(pi, ctx, null);
       ctx.ui.notify(state ? `Stopped workflow ${state.taskId}.` : "No active Pi with ChatGPT workflow.", "info");
+    },
+  });
+
+  pi.registerCommand("p2c-mode", {
+    description: "Get or set plan approval mode: plan or auto",
+    handler: async (args, ctx) => {
+      const mode = args.trim().toLowerCase();
+      if (mode && mode !== "plan" && mode !== "auto") {
+        ctx.ui.notify("Usage: /p2c-mode [plan|auto]", "warning");
+        return;
+      }
+      try {
+        const result = await runP2c<ApprovalModeResult>(
+          pi,
+          ctx,
+          ["config", "approval-mode", ...(mode ? [mode] : [])]
+        );
+        ctx.ui.notify(
+          `Plan approval mode: ${result.approvalMode}${result.stored ? "" : " (default)"}.`,
+          "info"
+        );
+      } catch (error) {
+        ctx.ui.notify(`p2c mode failed: ${(error as Error).message}`, "error");
+      }
     },
   });
 
