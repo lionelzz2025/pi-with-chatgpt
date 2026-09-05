@@ -61,6 +61,14 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - Keep `/p2c-approve` and interactive confirmation behavior for `plan` mode.
 - Add CLI and mocked Pi extension regression coverage for persisted and automatic approval behavior.
 
+## Completed in the transport-abstraction checkpoint
+
+- Define a small `ChatGptTransport.exchange()` interface for control-plane request/reply rounds.
+- Move manual editor copy/paste behavior into `ManualTransport`.
+- Route both PLAN and REVIEW rounds through the transport interface without changing the workflow protocol.
+- Add direct transport regression coverage for reply normalization and missing/unchanged manual input.
+- Keep transport state separate from the orchestration state machine so Playwright can be added as another implementation.
+
 ## Next
 
 1. Strengthen the execution gate with protected paths, dangerous-command confirmation, and explicit fail-closed behavior for abnormal states.
