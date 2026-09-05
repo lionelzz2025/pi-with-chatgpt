@@ -809,6 +809,8 @@ PLAN → EXECUTE → REVIEW → DONE
 
 任务：
 
+- [x] 抽象 `ChatGptTransport` 接口并让 ManualTransport 通过统一接口运行
+
 - [ ] 加入 Playwright 依赖或独立 browser package
 - [ ] 独立 browser profile
 - [ ] ChatGPT 登录复用
