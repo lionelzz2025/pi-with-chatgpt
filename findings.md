@@ -35,6 +35,14 @@ The old Codex `writable_roots` mechanism is not a Pi security model. For Pi, the
 - `c2c` should remain a temporary CLI alias until the migration is stable.
 - Execution records should remain backward-compatible but identify the execution agent.
 
+### Approval policy belongs outside the workspace
+
+`approvalMode` is a user/workspace execution preference, not project source. Persisting it under the existing P2C OS state directory avoids dirtying repositories or introducing a writable configuration path inside the workspace. The default remains `plan` so preference read failures degrade safely to explicit approval.
+
+### Auto approval should only skip the human gate
+
+`auto` changes one transition: `PLAN_READY → EXECUTING`. It does not weaken the phase mutation gate, bypass ChatGPT review, or change the iteration safety limit. Keeping those concerns separate makes later browser automation easier to reason about.
+
 ## Current limitations
 
 - Workflow persistence is scoped to Pi session entries; starting an unrelated fresh Pi session does not automatically import a previous workflow.
