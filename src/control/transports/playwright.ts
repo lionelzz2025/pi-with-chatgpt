@@ -1,91 +1,182 @@
 import path from "node:path";
-import type { BrowserContext, LaunchOptions } from "playwright";
+import type { Browser, BrowserContext, LaunchOptions, Locator, Page } from "playwright";
 import { getStateDir, ensureDir } from "../../config/paths.js";
 import type { ChatGptTransport, ChatGptTransportRequest } from "../transport.js";
 import { readChatGptSession, saveChatGptSession, type ChatGptSession } from "../session-store.js";
 
+const CHATGPT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"], [data-markdown-text-style="assistant-message"]';
+const VISIBLE_COMPOSER_SELECTOR = '#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible';
+const CDP_ENDPOINT_PATTERN = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\/?$/i;
+
+function isTrustedChatGptUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["chatgpt.com", "chat.openai.com"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export interface PlaywrightTransportOptions {
   profileDir?: string;
   launchOptions?: LaunchOptions;
-  /** Dependency injection seam for tests and embedding applications. */
-  launchPersistentContext?: (
-    userDataDir: string,
-    options?: LaunchOptions
-  ) => Promise<BrowserContext>;
+  /** Dependency injection seams for tests and embedding applications. */
+  launchPersistentContext?: (userDataDir: string, options?: LaunchOptions) => Promise<BrowserContext>;
+  connectOverCDP?: (endpointURL: string) => Promise<Browser>;
+  /** Attach to an already-running browser explicitly; never auto-connect to arbitrary local browsers. */
+  cdpEndpoint?: string;
+  timeoutMs?: number;
 }
 
-/** Persistent, application-owned browser context for ChatGPT Web. */
+/** Persistent application-owned context or explicitly attached CDP browser for ChatGPT Web. */
 export class PlaywrightTransport implements ChatGptTransport {
   readonly profileDir: string;
   private context: BrowserContext | null = null;
+  private browser: Browser | null = null;
+  private ownsContext = false;
+  private activeWorkspaceId: string | null = null;
 
   constructor(private readonly options: PlaywrightTransportOptions = {}) {
-    this.profileDir = path.resolve(
-      options.profileDir ?? path.join(getStateDir(), "browser-profile")
-    );
+    this.profileDir = path.resolve(options.profileDir ?? path.join(getStateDir(), "browser-profile"));
   }
 
-  /** Launch an isolated persistent profile; never uses the user's default browser profile. */
   async initialize(): Promise<void> {
     if (this.context) return;
-    ensureDir(this.profileDir);
-    let launch = this.options.launchPersistentContext;
-    if (!launch) {
-      let chromium: typeof import("playwright")["chromium"];
-      try {
-        ({ chromium } = await import("playwright"));
-      } catch (error) {
-        throw new Error(
-          "Playwright browser support is optional. Install the package with `pnpm add playwright` to use PlaywrightTransport.",
-          { cause: error }
-        );
+    if (this.options.cdpEndpoint) {
+      if (!CDP_ENDPOINT_PATTERN.test(this.options.cdpEndpoint)) {
+        throw new Error("CDP endpoint must be a local loopback HTTP(S) URL with an optional port. Exposing CDP remotely grants control of the browser session.");
       }
-      launch = (userDataDir, launchOptions) =>
-        chromium.launchPersistentContext(userDataDir, {
-          headless: false,
-          ...launchOptions,
-        });
+      const chromium = await this.loadChromium();
+      const connect = this.options.connectOverCDP ?? chromium.connectOverCDP.bind(chromium);
+      this.browser = await connect(this.options.cdpEndpoint);
+      this.context = this.browser.contexts()[0] ?? await this.browser.newContext();
+      this.ownsContext = false;
+      this.context.setDefaultTimeout(this.timeoutMs);
+      return;
     }
+    ensureDir(this.profileDir);
+    const chromium = this.options.launchPersistentContext ? undefined : await this.loadChromium();
+    const launch = this.options.launchPersistentContext ?? ((userDataDir: string, launchOptions?: LaunchOptions) =>
+      chromium!.launchPersistentContext(userDataDir, { headless: false, ...launchOptions }));
     this.context = await launch(this.profileDir, this.options.launchOptions);
+    this.ownsContext = true;
+    this.context.setDefaultTimeout(this.timeoutMs);
   }
 
-  /** Open the saved workspace conversation, or start a new ChatGPT conversation. */
   async openSession(workspaceId: string): Promise<string> {
     const context = this.requireContext();
-    const page = context.pages()[0] ?? await context.newPage();
+    const page = context.pages().find((candidate) => isTrustedChatGptUrl(candidate.url())) ?? await context.newPage();
     const saved = readChatGptSession(workspaceId);
-    await page.goto(saved?.url ?? "https://chatgpt.com/", { waitUntil: "domcontentloaded" });
-    return page.url();
+    if (saved && !isTrustedChatGptUrl(saved.url)) {
+      throw new Error(`Refusing to open an untrusted saved ChatGPT URL: ${saved.url}`);
+    }
+    if ((saved && page.url() !== saved.url) || !isTrustedChatGptUrl(page.url())) {
+      await page.goto(saved?.url ?? "https://chatgpt.com/", {
+        waitUntil: "domcontentloaded", timeout: this.timeoutMs,
+      });
+    }
+    const url = page.url();
+    if (!isTrustedChatGptUrl(url)) {
+      throw new Error(`Unexpected page after opening ChatGPT session: ${url}`);
+    }
+    this.activeWorkspaceId = workspaceId;
+    return url;
   }
 
-  /** Persist the current conversation URL for a workspace. */
   saveSession(workspaceId: string, title?: string): ChatGptSession {
-    const page = this.requireContext().pages()[0];
+    const page = this.requireContext().pages().find((candidate) => isTrustedChatGptUrl(candidate.url()));
     if (!page) throw new Error("No ChatGPT page is open to save as a session.");
     return saveChatGptSession(workspaceId, { url: page.url(), title });
   }
 
-  /**
-   * Browser send/reply automation is intentionally not enabled yet. ChatGPT's
-   * composer and reply DOM are volatile; implement behind this class with
-   * explicit login/session checks and bounded waits before enabling exchange.
-   */
-  async exchange(_request: ChatGptTransportRequest): Promise<string> {
-    throw new Error(
-      "Playwright ChatGPT exchange is not implemented yet. Initialize the browser, sign in, and use ManualTransport for control messages."
-    );
+  async exchange(request: ChatGptTransportRequest): Promise<string> {
+    const page = await this.getPage();
+    await this.assertLoggedIn(page);
+    const composer = page.locator(VISIBLE_COMPOSER_SELECTOR).first();
+    await this.waitVisible(composer, "ChatGPT message composer was not found; sign in or update the supported UI selectors.");
+    const previousCount = await page.locator(CHATGPT_MESSAGE_SELECTOR).count();
+    await composer.fill(request.outbound);
+    await composer.press("Enter");
+
+    const timeout = this.timeoutMs;
+    const response = page.locator(CHATGPT_MESSAGE_SELECTOR).last();
+    try {
+      await page.waitForFunction(
+        ({ selector, previousCount, outbound }) => {
+          const messages = document.querySelectorAll(selector);
+          const last = messages.item(messages.length - 1);
+          const stopButton = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop generating" i], button[aria-label*="停止生成"]');
+          const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label*="Send prompt" i], button[aria-label*="发送提示"]');
+          const text = last?.textContent?.trim() ?? "";
+          return messages.length > previousCount && Boolean(text) && text !== outbound &&
+            stopButton === null && (sendButton === null || !sendButton.hasAttribute("disabled"));
+        },
+        { selector: CHATGPT_MESSAGE_SELECTOR, previousCount, outbound: request.outbound },
+        { timeout, polling: "raf" },
+      );
+      await response.waitFor({ state: "visible", timeout });
+    } catch (error) {
+      throw new Error("Timed out waiting for ChatGPT to finish its reply. Check the browser and retry manually.", { cause: error });
+    }
+    const text = (await response.innerText()).trim();
+    if (!text) throw new Error("ChatGPT returned an empty response; retry manually.");
+    if (this.activeWorkspaceId) {
+      const url = page.url();
+      if (!isTrustedChatGptUrl(url)) {
+        throw new Error("ChatGPT navigated outside its trusted host; refusing to save the session URL.");
+      }
+      saveChatGptSession(this.activeWorkspaceId, { url, title: request.title });
+    }
+    return text;
   }
 
   async close(): Promise<void> {
     const context = this.context;
+    const browser = this.browser;
     this.context = null;
-    await context?.close();
+    this.browser = null;
+    this.activeWorkspaceId = null;
+    if (this.ownsContext) await context?.close();
+    else await browser?.close(); // Playwright CDP close disconnects this client; it leaves Chrome running.
+  }
+
+  private get timeoutMs(): number { return this.options.timeoutMs ?? 120_000; }
+
+  private async getPage(): Promise<Page> {
+    const context = this.requireContext();
+    const page = context.pages().find((candidate) => isTrustedChatGptUrl(candidate.url()));
+    if (!page) {
+      throw new Error("Open a ChatGPT conversation with PlaywrightTransport.openSession() before exchanging messages.");
+    }
+    return page;
+  }
+
+  private async assertLoggedIn(page: Page): Promise<void> {
+    const login = page.getByRole("button", { name: /log in|sign up/i });
+    if (await login.isVisible().catch(() => false)) {
+      throw new Error("ChatGPT is not signed in. Sign in to the persistent Playwright browser profile, then retry.");
+    }
+    try {
+      await page.locator(VISIBLE_COMPOSER_SELECTOR).first().waitFor({ state: "visible", timeout: this.timeoutMs });
+    } catch (error) {
+      throw new Error("ChatGPT composer is unavailable. Sign in and verify the conversation page before retrying.", { cause: error });
+    }
+  }
+
+  private async waitVisible(locator: Locator, message: string): Promise<void> {
+    try { await locator.waitFor({ state: "visible", timeout: this.timeoutMs }); }
+    catch (error) { throw new Error(message, { cause: error }); }
+  }
+
+  private async loadChromium(): Promise<typeof import("playwright")["chromium"]> {
+    try { return (await import("playwright")).chromium; }
+    catch (error) {
+      throw new Error("Playwright browser support is optional. Install the package with `pnpm add playwright` to use PlaywrightTransport.", { cause: error });
+    }
   }
 
   private requireContext(): BrowserContext {
-    if (!this.context) {
-      throw new Error("Playwright transport is not initialized; call initialize() first.");
-    }
+    if (!this.context) throw new Error("Playwright transport is not initialized; call initialize() first.");
     return this.context;
   }
 }

@@ -841,17 +841,17 @@ PLAN → EXECUTE → REVIEW → DONE
 
 - [x] 抽象 `ChatGptTransport` 接口并让 ManualTransport 通过统一接口运行
 
-Phase 6 本次交付了独立的浏览器 profile 启动骨架和 workspace 级会话 URL 存储；自动消息交换、登录检测、回复解析及连接器自动化仍未实现，故本阶段不可标记完成。
+Phase 6 当前已具备独立浏览器 profile、workspace 级会话 URL 存储，以及有界的 composer 发送/assistant 回复捕获基础；显式 CDP attach 只接受 loopback URL，能够过滤非 ChatGPT 标签页、拒绝不可信会话 URL。2026-10-10 已通过真实已登录 Chrome/CDP 验证一次 `PlaywrightTransport.exchange()` 的发送与回复捕获，但 Extension 仍使用 ManualTransport；仍需协议解析链路、retry/reconnect 和 connector 自动化，故本阶段不可标记完成。
 
 - [x] 加入可选 Playwright 依赖（核心 CLI 不强制安装）
 - [x] 独立 browser profile（state dir 下的 `browser-profile/`）
-- [ ] ChatGPT 登录复用（持久化 profile 已提供，尚未做真实浏览器登录验收）
+- [ ] ChatGPT 登录复用（可选 loopback-only CDP attach 已通过真实 ChatGPT 收发；Extension 仍使用 ManualTransport，未接入 CDP 配置）
 - [ ] Developer mode / connector setup 自动化
 - [ ] Pairing code 自动输入
 - [x] conversation URL 持久化（workspace 级、验证 ChatGPT HTTPS host）
-- [ ] INIT/EXECUTED 消息自动发送（当前 `exchange()` 明确报未实现）
-- [ ] PLAN/DONE/BLOCKED 回复解析
-- [ ] timeout/retry/reconnect 策略
+- [x] INIT/EXECUTED 消息自动发送（Playwright 将 `request.outbound` 填入可见 composer 并发送；已通过真实 UI 单次收发验收）
+- [x] PLAN/DONE/BLOCKED 回复解析（transport 已从真实 UI 返回 assistant 原文；由现有 orchestrator 的结构化回复 parser 处理，协议端到端仍待验收）
+- [ ] timeout/retry/reconnect 策略（已有有界导航/回复等待和可操作错误提示；retry/reconnect 尚未实现）
 - [ ] connector 地址变化时 Delete + recreate
 - [ ] Named Tunnel 固定域名时禁止无意义重建 connector
 
@@ -1083,6 +1083,29 @@ Pi Extension 驱动
 
 ---
 
+## 22. 上游更新审视与选择性移植计划（2026-10-10）
+
+对比基线：`XiaoDuoYa/codex-with-chatgpt` 的已取得上游快照 `535a07d`，与本仓库 `HEAD` 的共同祖先为 `6395334`。以下是**待审视候选**，不是已合并清单；执行前须重新确认远端 `main`、各提交内容和本地工作区状态。上游同时更改了 Codex Skill、CLI 和会话编排，本项目采用 Pi Extension 驱动，**不整支 merge/rebase，也不直接批量 cherry-pick**。仅以最小补丁移植仍适用的 agent-neutral 修复，并保留现有未提交的 Phase 6 工作。
+
+| 批次 | 候选提交及范围 | 审视重点 / 采纳条件 |
+| --- | --- | --- |
+| P0 搜索与隐私 | `97339f2` (`src/workspace/search.ts`)；`860d7bc` 中 `src/workspace/git.ts` / `src/mcp/server.ts` 部分 | 搜索不得静默漏匹配，截断信息准确；敏感路径不能从 git status、MCP 结果泄漏。`860d7bc` 的 Skill/CLI 流程不照搬。先对照本地已有过滤策略，避免双重过滤和输出契约变化。 |
+| P0 认证与配对 | `853c997` (`src/auth/html.ts`, `src/auth/oauth.ts`)；`ea0c074` (`src/auth/html.ts`)；关联测试提交 `b55d130` | 配对页面输出转义、防注入；HTTPS OAuth callback 仅允许符合既有信任边界的目标。审查重定向来源和状态校验，不因兼容性放宽到任意 URL。 |
+| P1 Windows / Tunnel | `9e56bf8`、`8577e32` (`src/tunnel/cloudflared.ts` / `detect.ts`)；`230eec1`（后台子进程窗口）；可再评估 `fb0570a`（Named Tunnel 凭据诊断） | Quick Tunnel 失败应 fail closed，DNS 尚未传播时不误判；Windows 不弹控制台且异常可诊断。分拆通用进程启动改动与 Codex CLI 路径，确认不会影响固定域名 Named Tunnel。 |
+| P1 MCP 数据契约 | `fe79d2d`、`a9f91cd` (`src/mcp/server.ts`、`src/workspace/manager.ts`、`src/execution/records.ts` 等) | 结构化输出来源验证与 schema 需成组设计；先梳理当前 MCP 客户端兼容及记录来源信任边界，再逐接口引入，不能仅复制 schema 而漏掉验证。 |
+| P2 产品机会 | `5f35d6a`（只读媒体导入/查询） | 仅当 Pi 产品范围需要时另立需求；审核文件类型、大小、workspace 边界和敏感数据处理后再决定。 |
+
+暂不采纳：Codex Skill 自动更新/安装、Codex sandbox 与 in-app browser 依赖、`c2c` 专属会话/CLI 编排；文档品牌与版本号的机械同步也不作为功能补丁。可独立借鉴的逻辑须先证明不依赖这些机制。
+
+执行门槛（每批单独审视、单独提交，未经审视不实施）：
+
+1. 用 `git show` 对照当前实现与测试，写明问题是否仍存在、依赖提交和受影响契约；若本地已修复或不适用则记录跳过理由。
+2. 先补回归测试再最小移植；每批运行相关测试、`pnpm test`、`pnpm typecheck`、`pnpm build`、`git diff --check`，安全敏感项另做边界/负例测试（注入、敏感路径、失败关闭）。
+3. 对照基线 `169` 项测试及当前 Phase 6 未提交变更，确认没有改坏 Pi Extension 的门禁、ManualTransport 和 PlaywrightTransport；测试数量只作参考，不代替行为验证。
+4. 每批交付提交来源、采纳/跳过决策、测试证据和剩余风险；涉及 API/MCP 输出变更时先明确兼容策略，不把上游特定实现默认为本项目规范。
+
+此审视工作与 Phase 6 浏览器集成并行排期；不把候选补丁视为 Phase 6 完成条件，也不因计划更新宣称它们已经合并。
+
 ## Next Step
 
-**Phase 6 — PlaywrightTransport exchange**：实现 ChatGPT Web 的登录态检测、发送控制消息及 PLAN/DONE/BLOCKED 回复解析；使用真实 UI 验收前保持自动 exchange 禁用。后续再实现 timeout/retry/reconnect 与 connector 生命周期自动化。
+**Phase 6**：真实 CDP 单次发送及回复捕获已通过；下一步将 opt-in PlaywrightTransport 接入 Pi Extension，验证 PLAN/DONE/BLOCKED 端到端解析，然后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。
