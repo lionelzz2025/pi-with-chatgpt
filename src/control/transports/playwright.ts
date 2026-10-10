@@ -8,6 +8,11 @@ const CHATGPT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"], [data-
 const VISIBLE_COMPOSER_SELECTOR = '#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible';
 const CDP_ENDPOINT_PATTERN = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\/?$/i;
 
+/** Loopback-only rule shared by the CLI configuration and the transport itself. */
+export function isLoopbackCdpEndpoint(value: string): boolean {
+  return CDP_ENDPOINT_PATTERN.test(value);
+}
+
 function isTrustedChatGptUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -43,7 +48,7 @@ export class PlaywrightTransport implements ChatGptTransport {
   async initialize(): Promise<void> {
     if (this.context) return;
     if (this.options.cdpEndpoint) {
-      if (!CDP_ENDPOINT_PATTERN.test(this.options.cdpEndpoint)) {
+      if (!isLoopbackCdpEndpoint(this.options.cdpEndpoint)) {
         throw new Error("CDP endpoint must be a local loopback HTTP(S) URL with an optional port. Exposing CDP remotely grants control of the browser session.");
       }
       const chromium = await this.loadChromium();

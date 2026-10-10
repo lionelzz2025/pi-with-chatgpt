@@ -845,7 +845,7 @@ Phase 6 当前已具备独立浏览器 profile、workspace 级会话 URL 存储�
 
 - [x] 加入可选 Playwright 依赖（核心 CLI 不强制安装）
 - [x] 独立 browser profile（state dir 下的 `browser-profile/`）
-- [ ] ChatGPT 登录复用（可选 loopback-only CDP attach 已通过真实 ChatGPT 收发；Extension 仍使用 ManualTransport，未接入 CDP 配置）
+- [x] ChatGPT 登录复用（已接入 Extension：`p2c config transport browser --cdp <loopback url>` 显式 opt-in，默认 manual；真实浏览器已通过 plan/review 两轮收发并复用同一会话）
 - [ ] Developer mode / connector setup 自动化
 - [ ] Pairing code 自动输入
 - [x] conversation URL 持久化（workspace 级、验证 ChatGPT HTTPS host）
@@ -1109,4 +1109,4 @@ Pi Extension 驱动
 
 ## Next Step
 
-**Phase 6**：真实 CDP 单次发送及回复捕获已通过；下一步将 opt-in PlaywrightTransport 接入 Pi Extension，验证 PLAN/DONE 端到端解析（BLOCKED 不适用，见上文决定），然后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。
+**Phase 6**：传输层与 Extension 接线已完成（`exchangeControl()`：manual 默认，browser 显式 opt-in，失败不静默回退）；真实浏览器两轮收发与会话复用已验证。下一步在 Pi 内实跑一次启用了 browser transport 的 `/p2c` 任务，确认全自动闭环；随后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。

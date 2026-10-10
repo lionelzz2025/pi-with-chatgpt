@@ -1,6 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ManualTransport } from "../src/control/transports/manual.js";
+import { PlaywrightTransport } from "../src/control/transports/playwright.js";
+import type { ChatGptTransportRequest } from "../src/control/transport.js";
 import {
   MUTATING_TOOLS,
   MUTATION_PHASES,
@@ -30,6 +32,7 @@ type ApprovalMode = "plan" | "auto";
 
 interface WorkflowState {
   taskId: string;
+  workspaceId?: string;
   workspaceName: string;
   goal: string;
   iteration: number;
@@ -106,6 +109,7 @@ interface ExtensionAPI {
 interface StatusResult {
   ok: boolean;
   running: boolean;
+  workspaceId?: string;
   workspaceName?: string;
   port?: number;
   publicUrl?: string | null;
@@ -127,6 +131,12 @@ interface ApprovalModeResult {
   ok: boolean;
   approvalMode: ApprovalMode;
   stored: boolean;
+}
+
+interface TransportResult {
+  ok: boolean;
+  mode?: string;
+  cdpEndpoint?: string;
 }
 
 interface ExecutionObservation {
@@ -405,6 +415,55 @@ async function resolveApprovalMode(pi: ExtensionAPI, ctx: CommandContext): Promi
   }
 }
 
+/**
+ * Send one control message to ChatGPT through the configured transport.
+ * Browser transport is opt-in (`p2c config transport browser --cdp <loopback url>`) and
+ * never attaches implicitly; a browser failure is reported instead of silently
+ * falling back to copy/paste, because the message may already have been sent.
+ */
+async function exchangeControl(
+  pi: ExtensionAPI,
+  ctx: CommandContext,
+  state: WorkflowState,
+  request: ChatGptTransportRequest
+): Promise<string> {
+  let preference: TransportResult = { ok: true, mode: "manual" };
+  try {
+    preference = await runP2c<TransportResult>(pi, ctx, ["config", "transport"]);
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not read transport preference; using manual copy/paste: ${(error as Error).message}`,
+      "warning"
+    );
+  }
+
+  if (preference.mode !== "browser") {
+    return new ManualTransport(ctx.ui.editor).exchange(request);
+  }
+
+  const cdpEndpoint = preference.cdpEndpoint;
+  if (!cdpEndpoint || !state.workspaceId) {
+    throw new Error(
+      "Browser transport needs a CDP endpoint and a workspace id. Run `p2c config transport browser --cdp http://127.0.0.1:9222`, then start a new /p2c task; use `p2c config transport manual` to go back to copy/paste."
+    );
+  }
+
+  const transport = new PlaywrightTransport({ cdpEndpoint });
+  try {
+    await transport.initialize();
+    await transport.openSession(state.workspaceId);
+    return await transport.exchange(request);
+  } catch (error) {
+    throw new Error(
+      `Browser transport failed: ${(error as Error).message} Fix the browser or run \`p2c config transport manual\` to go back to copy/paste.`,
+      { cause: error }
+    );
+  } finally {
+    // Detaches the Playwright client only; the attached Chrome keeps running.
+    await transport.close().catch(() => undefined);
+  }
+}
+
 async function dispatchPiExecution(
   pi: ExtensionAPI,
   ctx: CommandContext,
@@ -587,6 +646,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         }
         state = {
           taskId: createTaskId(),
+          workspaceId: status.workspaceId,
           workspaceName: status.workspaceName ?? path.basename(ctx.cwd),
           goal,
           iteration: 0,
@@ -594,7 +654,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         };
         ignoreRulesByWorkspace.delete(ctx.cwd);
         saveWorkflow(pi, ctx, state);
-        const reply = await new ManualTransport(ctx.ui.editor).exchange({
+        const reply = await exchangeControl(pi, ctx, state, {
           title: "ChatGPT planning round",
           outbound: buildPlanRequest(state),
         });
@@ -644,7 +704,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       try {
         const state = requireWorkflow(ctx.cwd, "REVIEWING");
-        const reply = await new ManualTransport(ctx.ui.editor).exchange({
+        const reply = await exchangeControl(pi, ctx, state, {
           title: "ChatGPT review round",
           outbound: buildReviewRequest(state),
         });

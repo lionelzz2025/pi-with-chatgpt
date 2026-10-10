@@ -68,6 +68,61 @@ describe("p2c approval mode config", () => {
   });
 });
 
+describe("p2c transport config", () => {
+  it("defaults to manual, persists a loopback CDP endpoint, and rejects non-loopback endpoints", () => {
+    const root = makeTmpDir("p2c-transport");
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(workspace, { recursive: true });
+
+    const env = { ...process.env, P2C_STATE_DIR: stateDir, C2C_STATE_DIR: "" };
+
+    const initial = runCli(["config", "transport", "--json", "--workspace", workspace], env);
+    expect(initial.status, initial.stderr || initial.stdout).toBe(0);
+    expect(parseLastJson(initial.stdout)).toMatchObject({ ok: true, mode: "manual", stored: false });
+
+    const remote = runCli(
+      ["config", "transport", "browser", "--cdp", "http://192.168.1.10:9222", "--json", "--workspace", workspace],
+      env
+    );
+    expect(remote.status).not.toBe(0);
+    expect(`${remote.stdout}${remote.stderr}`).toContain("loopback");
+
+    const missingEndpoint = runCli(
+      ["config", "transport", "browser", "--json", "--workspace", workspace],
+      env
+    );
+    expect(missingEndpoint.status).not.toBe(0);
+    expect(`${missingEndpoint.stdout}${missingEndpoint.stderr}`).toContain("--cdp");
+
+    const browser = runCli(
+      ["config", "transport", "browser", "--cdp", "http://127.0.0.1:9222", "--json", "--workspace", workspace],
+      env
+    );
+    expect(browser.status, browser.stderr || browser.stdout).toBe(0);
+    expect(parseLastJson(browser.stdout)).toMatchObject({
+      ok: true,
+      mode: "browser",
+      cdpEndpoint: "http://127.0.0.1:9222",
+      stored: true,
+    });
+
+    runCli(["config", "approval-mode", "auto", "--json", "--workspace", workspace], env);
+    const persisted = runCli(["config", "transport", "--json", "--workspace", workspace], env);
+    expect(parseLastJson(persisted.stdout)).toMatchObject({
+      ok: true,
+      mode: "browser",
+      cdpEndpoint: "http://127.0.0.1:9222",
+    });
+    const approval = runCli(["config", "approval-mode", "--json", "--workspace", workspace], env);
+    expect(parseLastJson(approval.stdout)).toMatchObject({ approvalMode: "auto", stored: true });
+
+    const backToManual = runCli(["config", "transport", "manual", "--json", "--workspace", workspace], env);
+    expect(parseLastJson(backToManual.stdout)).toMatchObject({ ok: true, mode: "manual" });
+  });
+});
+
 describe("p2c without Codex", () => {
   it("runs setup and doctor without creating a Codex config", () => {
     const root = makeTmpDir("p2c-cli");

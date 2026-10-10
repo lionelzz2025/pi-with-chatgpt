@@ -140,8 +140,16 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - Still not verified: end-to-end `/p2c` through the browser transport instead of `ManualTransport`; retry/reconnect; connector setup/pairing and URL lifecycle automation.
 - Plan/implementation mismatch found and resolved by decision (B): `parseControlReply` accepts only `PLAN|FIX|DONE`, so ChatGPT cannot return `BLOCKED`; `BLOCKED` is a Pi-side terminal phase only (iteration limit / workflow error), and a ChatGPT `BLOCKED` reply fails safely as a format error with mutations frozen. The Phase 6 checklist and §18 test list were corrected to match the implementation instead of adding a ChatGPT-side stop state. No behavior was changed.
 
+## Phase 6 browser transport wiring checkpoint (2026-10-10)
+
+- Browser transport is now reachable from the extension but still explicitly opt-in: `p2c config transport browser --cdp http://127.0.0.1:9222` stores `{ transport: "browser", cdpEndpoint }` in the workspace preference file; default stays `manual`. Non-loopback endpoints and `browser` without an endpoint are rejected with actionable errors. `src/control/transports/playwright.ts` exports `isLoopbackCdpEndpoint` so the CLI and the transport enforce one rule.
+- `p2c config transport` also returns the current mode and endpoint; `p2c status --json` now includes `workspaceId`, which the extension stores in the workflow state and passes to `PlaywrightTransport.openSession()` so the plan and review rounds reuse one persisted conversation.
+- `extensions/index.ts` gained `exchangeControl()`: manual mode keeps the existing `ManualTransport` path, browser mode creates a `PlaywrightTransport`, initializes, opens the workspace session, exchanges, and always disconnects in `finally` (detaching the CDP client without closing Chrome). A browser failure is reported with the exact remedy (`p2c config transport manual`) and never falls back to copy/paste, because the message may already have been sent.
+- Verified live: real CLI config write via a temporary state dir; `p2c status --json` returned `workspaceId 8e8bb3e46c81` from a running local bridge; two real browser exchanges (INIT→`STATE: PLAN`, REVIEW→`STATE: DONE`) both reopened the same saved conversation URL and persisted `state/sessions/8e8bb3e46c81.json`. Bridge stopped and the temporary workspace/state were recycled afterwards.
+- Verification: 17 files / 173 tests passed (4 new: browser transport used, browser failure reported without fallback, manual mode does not attach, CLI transport config persist/validate); typecheck, build, and `git diff --check` passed. Not yet verified: an actual `/p2c` run inside Pi with browser transport enabled (the extension path is covered by mocks only).
+
 ## Next
 
-1. Wire opt-in CDP/Playwright transport into the Pi Extension and verify end-to-end PLAN/DONE parsing; no implicit browser attachment.
+1. Run a real `/p2c` task in Pi with `p2c config transport browser` enabled to confirm the full automated loop end to end.
 2. Independently review §22 P0 upstream candidates against current code and tests, recording adopt/skip decisions before implementing any batch.
 3. Implement retry/reconnect and connector setup/pairing/lifecycle after browser protocol acceptance; improve execution evidence and Pi integration coverage.

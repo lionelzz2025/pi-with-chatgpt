@@ -4,12 +4,48 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import registerPiWithChatGPT from "../extensions/index.js";
 
+interface PlaywrightStub {
+  options: { cdpEndpoint?: string; timeoutMs?: number };
+  events: string[];
+}
+
+const playwrightMock = vi.hoisted(() => ({
+  instances: [] as PlaywrightStub[],
+  failExchange: false,
+  reply: "[P2C]\nSTATE: PLAN\n\nPLAN:\n1. Edit the implementation.",
+}));
+
+vi.mock("../src/control/transports/playwright.js", () => ({
+  isLoopbackCdpEndpoint: (value: string) => /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/?$/i.test(value),
+  PlaywrightTransport: class {
+    options: { cdpEndpoint?: string; timeoutMs?: number };
+    events: string[] = [];
+    constructor(options: { cdpEndpoint?: string; timeoutMs?: number }) {
+      this.options = options;
+      playwrightMock.instances.push(this as unknown as PlaywrightStub);
+    }
+    async initialize(): Promise<void> { this.events.push("initialize"); }
+    async openSession(workspaceId: string): Promise<string> {
+      this.events.push(`openSession:${workspaceId}`);
+      return "https://chatgpt.com/c/mocked";
+    }
+    async exchange(request: { title: string }): Promise<string> {
+      this.events.push(`exchange:${request.title}`);
+      if (playwrightMock.failExchange) throw new Error("composer not found");
+      return playwrightMock.reply;
+    }
+    async close(): Promise<void> { this.events.push("close"); }
+  },
+}));
+
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let harnessIndex = 0;
 
 interface HarnessOptions {
   reviewReply?: "DONE" | "FIX";
   approvalMode?: "plan" | "auto";
+  transport?: "manual" | "browser";
+  cdpEndpoint?: string;
   cwd?: string;
   initialEntries?: Array<{ type: string; customType: string; data: unknown }>;
   tools?: Array<{ name: string; annotations?: Record<string, boolean> }>;
@@ -17,6 +53,8 @@ interface HarnessOptions {
 }
 
 function createHarness(options: HarnessOptions = {}) {
+  playwrightMock.instances.length = 0;
+  playwrightMock.failExchange = false;
   const commands: Record<string, { handler(args: string, ctx: any): Promise<void> | void }> = {};
   const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
   const notifications: Array<{ message: string; level?: string }> = [];
@@ -43,9 +81,23 @@ function createHarness(options: HarnessOptions = {}) {
           JSON.stringify({
             ok: true,
             running: true,
+            workspaceId: "ws-demo",
             workspaceName: "demo",
             port: 48765,
             publicUrl: "https://demo.example.test",
+          }) + "\n",
+        stderr: "",
+      };
+    }
+    if (args.includes("config") && args.includes("transport")) {
+      return {
+        code: 0,
+        stdout:
+          JSON.stringify({
+            ok: true,
+            mode: options.transport ?? "manual",
+            ...(options.cdpEndpoint ? { cdpEndpoint: options.cdpEndpoint } : {}),
+            stored: options.transport !== undefined,
           }) + "\n",
         stderr: "",
       };
@@ -248,6 +300,52 @@ describe("Pi extension commands", () => {
 
     const doneGate = await handlers.tool_call[0]({ toolName: "edit" }, ctx);
     expect(doneGate).toBeUndefined();
+  });
+
+  it("uses the browser transport when it is explicitly configured", async () => {
+    const { commands, editor, sentMessages, ctx } = createHarness({
+      transport: "browser",
+      cdpEndpoint: "http://127.0.0.1:9222",
+    });
+
+    await commands["p2c"].handler("Implement with browser transport", ctx);
+
+    expect(editor).not.toHaveBeenCalled();
+    expect(sentMessages).toHaveLength(1);
+    expect(playwrightMock.instances).toHaveLength(1);
+    expect(playwrightMock.instances[0].options).toMatchObject({ cdpEndpoint: "http://127.0.0.1:9222" });
+    expect(playwrightMock.instances[0].events).toEqual([
+      "initialize",
+      "openSession:ws-demo",
+      "exchange:ChatGPT planning round",
+      "close",
+    ]);
+    expect(sentMessages[0]).toContain("Edit the implementation");
+  });
+
+  it("reports a browser transport failure instead of silently falling back to copy/paste", async () => {
+    const { commands, editor, notifications, ctx } = createHarness({
+      transport: "browser",
+      cdpEndpoint: "http://127.0.0.1:9222",
+    });
+    playwrightMock.failExchange = true;
+
+    await commands["p2c"].handler("Fail over to manual", ctx);
+
+    expect(editor).not.toHaveBeenCalled();
+    expect(playwrightMock.instances[0].events).toContain("close");
+    const failure = notifications.find((entry) => entry.level === "error");
+    expect(failure?.message).toContain("Browser transport failed");
+    expect(failure?.message).toContain("p2c config transport manual");
+  });
+
+  it("does not attach a browser when the transport preference is manual", async () => {
+    const { commands, editor, ctx } = createHarness();
+
+    await commands["p2c"].handler("Stay in copy/paste mode", ctx);
+
+    expect(playwrightMock.instances).toHaveLength(0);
+    expect(editor).toHaveBeenCalledTimes(1);
   });
 
   it("loops REVIEWING → FIXING → REVIEWING when ChatGPT asks for fixes", async () => {

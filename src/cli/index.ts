@@ -27,7 +27,8 @@ import {
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
-import { readApprovalMode, writeApprovalMode, type ApprovalMode } from "../config/workflow.js";
+import { readApprovalMode, readTransport, writeApprovalMode, writeTransport, type ApprovalMode, type TransportMode } from "../config/workflow.js";
+import { isLoopbackCdpEndpoint } from "../control/transports/playwright.js";
 import { ensureSandboxAllowlist } from "../config/sandbox-allow.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
@@ -334,7 +335,7 @@ program
     }
     const info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
     if (opts.json) {
-      say(JSON.stringify({ ok: true, running: true, ...info }));
+      say(JSON.stringify({ ok: true, running: true, ...info, workspaceId: workspace.id }));
       return;
     }
     say(PRODUCT_NAME);
@@ -681,6 +682,54 @@ configCmd
       } else {
         say(
           `Approval mode: ${preference.approvalMode}${preference.stored ? "" : " (default)"}`
+        );
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+configCmd
+  .command("transport")
+  .description("Get or set how Pi exchanges control messages with ChatGPT (manual copy/paste or browser automation)")
+  .argument("[mode]", "manual or browser")
+  .option("--cdp <url>", "loopback CDP endpoint of an already running browser, e.g. http://127.0.0.1:9222")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action((mode: string | undefined, opts: { cdp?: string; workspace?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const current = readTransport(workspace.id);
+      let preference;
+
+      if (mode === undefined && opts.cdp === undefined) {
+        preference = current;
+      } else {
+        let normalized: TransportMode = current.mode;
+        if (mode !== undefined) {
+          const value = mode.trim().toLowerCase();
+          if (value !== "manual" && value !== "browser") {
+            throw new Error("transport mode must be 'manual' or 'browser'");
+          }
+          normalized = value;
+        }
+        const endpoint = opts.cdp ?? current.cdpEndpoint;
+        if (endpoint !== undefined && !isLoopbackCdpEndpoint(endpoint)) {
+          throw new Error("CDP endpoint must be a loopback URL such as http://127.0.0.1:9222; exposing CDP remotely grants control of the browser session");
+        }
+        if (normalized === "browser" && !endpoint) {
+          throw new Error("browser transport needs an explicitly attached browser: `p2c config transport browser --cdp http://127.0.0.1:9222`");
+        }
+        preference = writeTransport(workspace.id, normalized, endpoint);
+      }
+
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, ...preference }));
+      } else {
+        say(
+          `Transport: ${preference.mode}${preference.stored ? "" : " (default)"}${
+            preference.cdpEndpoint ? ` (CDP ${preference.cdpEndpoint})` : ""
+          }`
         );
       }
     } catch (error) {
