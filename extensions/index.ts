@@ -9,6 +9,11 @@ import {
   dangerousCommandLabel,
   extractMutationPath,
   isKnownPhase,
+  isMcpFamilyTool,
+  isMcpResourceTool,
+  mcpToolIsReadOnly,
+  mcpToolLabel,
+  type ToolAnnotations,
   type WorkflowPhase,
 } from "../src/control/security-gate.js";
 import { IgnoreRules } from "../src/workspace/ignore.js";
@@ -68,12 +73,18 @@ interface ToolResultEvent {
   isError?: boolean;
 }
 
+interface ToolInfo {
+  name: string;
+  annotations?: ToolAnnotations;
+}
+
 interface ExtensionAPI {
   exec(
     command: string,
     args: string[],
     options?: { signal?: AbortSignal; timeout?: number; cwd?: string }
   ): Promise<ExecResult>;
+  getAllTools?(): ToolInfo[];
   registerCommand(
     name: string,
     options: {
@@ -151,6 +162,21 @@ function ignoreRulesFor(cwd: string): IgnoreRules {
 
 function inputRecord(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+}
+
+/**
+ * Look up a tool's Pi descriptor, which carries MCP annotations.
+ * Returns undefined when the runtime has no `getAllTools` or the tool is unknown,
+ * which callers must treat as unverifiable rather than as "read-only".
+ */
+function findToolDescriptor(pi: ExtensionAPI, toolName: string): ToolInfo | undefined {
+  try {
+    const tools = pi.getAllTools?.();
+    if (!Array.isArray(tools)) return undefined;
+    return tools.find((tool) => tool && tool.name === toolName);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseLastJson<T>(stdout: string): T {
@@ -418,7 +444,24 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     const toolEvent = event as ToolCallEvent;
     const state = workflowByWorkspace.get(ctx.cwd);
-    if (!state || !MUTATING_TOOLS.has(toolEvent.toolName)) return;
+    if (!state) return;
+    const toolName = toolEvent.toolName;
+    const mcpFamily = isMcpFamilyTool(toolName);
+    if (!mcpFamily && !MUTATING_TOOLS.has(toolName)) return;
+
+    let mcpAnnotations: ToolAnnotations | undefined;
+    if (mcpFamily) {
+      if (isMcpResourceTool(toolName)) return;
+      const descriptor = findToolDescriptor(pi, toolName);
+      if (!descriptor) {
+        return {
+          block: true,
+          reason: `Cannot verify the MCP tool '${toolName}' for workflow ${state.taskId}; failing closed. Run /p2c-stop to release the workflow freeze.`,
+        };
+      }
+      mcpAnnotations = descriptor.annotations;
+      if (mcpToolIsReadOnly(toolName, mcpAnnotations)) return;
+    }
 
     if (!isKnownPhase(state.phase)) {
       return {
@@ -434,11 +477,23 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         state.phase === "ERROR" || state.phase === "BLOCKED"
           ? " Run /p2c-stop to release the workflow freeze."
           : "";
+      if (mcpFamily) {
+        return {
+          block: true,
+          reason: `Pi with ChatGPT workflow ${state.taskId} is in ${state.phase}. The ${mcpToolLabel(
+            toolName,
+            mcpAnnotations
+          )} '${toolName}' is only allowed during EXECUTING or FIXING.${release}`,
+        };
+      }
       return {
         block: true,
         reason: `Pi with ChatGPT workflow ${state.taskId} is in ${state.phase}. Local mutation is only allowed during EXECUTING or FIXING.${release}`,
       };
     }
+
+    // MCP tools carry server-defined input shapes; the workspace write-target policy applies to built-in file tools only.
+    if (mcpFamily) return;
 
     if (toolEvent.toolName === "bash") {
       const command = inputRecord(toolEvent.input).command;

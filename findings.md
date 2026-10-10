@@ -71,6 +71,14 @@ The orchestrator only needs a small control-plane primitive: send one structured
 - The write-target policy has no per-task escape hatch yet; a task that legitimately needs to edit `.env` during execution is blocked until the workflow is stopped and the change is made manually (or the policy is adjusted).
 - Dangerous-command confirmation depends on an interactive `ctx.ui.confirm`; runtimes without it block the confirmation-list commands outright rather than allowing them unsupervised.
 
+## Phase 6 Playwright foundation
+
+- Playwright is optional; `PlaywrightTransport` dynamically imports it on initialization so the main CLI/core does not require browser automation at runtime.
+- Browser context uses a persistent app-owned profile at `<stateDir>/browser-profile`, separate from the user's default browser profile. `openSession(workspaceId)` reuses a previously persisted conversation URL or opens ChatGPT home; `saveSession` stores the active URL.
+- `src/control/session-store.ts` persists workspace-scoped session URLs using secure state-file writes and rejects invalid workspace IDs, non-HTTPS URLs, and hosts other than `chatgpt.com` / `chat.openai.com`.
+- `exchange()` intentionally remains disabled and throws an explicit not-implemented error. No verified ChatGPT composer/reply selectors, login detection, protocol parser, or retry logic exist yet; automation must not be claimed complete until implemented and exercised in a real browser.
+- Tests use injected `launchPersistentContext` to verify behavior without launching a browser; no end-to-end ChatGPT login test has been performed.
+
 ## Implementation lessons
 
 - Keep the extension package self-contained: source/git installs must resolve helpers relative to the package, not the user's workspace.

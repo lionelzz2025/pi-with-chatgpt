@@ -23,6 +23,64 @@ export const MUTATION_PHASES = new Set<WorkflowPhase>(["EXECUTING", "FIXING"]);
 /** Phases where the workflow no longer constrains local mutation (finished successfully or absent). */
 export const UNGUARDED_PHASES = new Set<WorkflowPhase>(["IDLE", "DONE"]);
 
+/** Prefix Pi uses for tools contributed by MCP servers: `mcp__<server>__<tool>`. */
+export const MCP_TOOL_PREFIX = "mcp__";
+
+/**
+ * Read-only MCP resource tools Pi exposes as core tools. They are not `mcp__`-prefixed
+ * because Pi owns them, but they belong to the MCP family and never mutate the workspace.
+ */
+export const MCP_RESOURCE_TOOLS = new Set([
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+/**
+ * Hints about what a tool does, mirroring MCP tool annotations. They come from the tool's
+ * author and are not verified, so only an explicit `readOnlyHint === true` is trusted here.
+ */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+/** True for MCP server tools, named `mcp__<server>__<tool>`. */
+export function isMcpTool(toolName: string): boolean {
+  return toolName.startsWith(MCP_TOOL_PREFIX);
+}
+
+/** True for Pi's read-only MCP resource tools. */
+export function isMcpResourceTool(toolName: string): boolean {
+  return MCP_RESOURCE_TOOLS.has(toolName);
+}
+
+/** True for any tool the MCP policy governs (MCP server tools and MCP resource tools). */
+export function isMcpFamilyTool(toolName: string): boolean {
+  return isMcpTool(toolName) || isMcpResourceTool(toolName);
+}
+
+/**
+ * Decide whether an MCP tool may run in any workflow phase.
+ *
+ * MCP defaults are fail-closed: when `readOnlyHint` is absent or false the tool is treated
+ * as a mutation, so it stays gated like `write`/`edit`/`bash`.
+ */
+export function mcpToolIsReadOnly(toolName: string, annotations?: ToolAnnotations | null): boolean {
+  if (isMcpResourceTool(toolName)) return true;
+  return annotations?.readOnlyHint === true;
+}
+
+/** Short human-readable class of an MCP tool, used in gate messages. */
+export function mcpToolLabel(toolName: string, annotations?: ToolAnnotations | null): string {
+  if (isMcpResourceTool(toolName)) return "read-only MCP resource tool";
+  if (mcpToolIsReadOnly(toolName, annotations)) return "read-only MCP tool";
+  if (annotations?.destructiveHint) return "destructive MCP tool";
+  return "mutating MCP tool";
+}
+
 export function isKnownPhase(value: unknown): value is WorkflowPhase {
   return typeof value === "string" && (WORKFLOW_PHASES as readonly string[]).includes(value);
 }

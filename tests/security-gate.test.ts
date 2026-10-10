@@ -5,6 +5,10 @@ import {
   dangerousCommandLabel,
   extractMutationPath,
   isKnownPhase,
+  isMcpFamilyTool,
+  isMcpResourceTool,
+  isMcpTool,
+  mcpToolIsReadOnly,
 } from "../src/control/security-gate.js";
 import { IgnoreRules } from "../src/workspace/ignore.js";
 
@@ -18,6 +22,24 @@ describe("isKnownPhase", () => {
     expect(isKnownPhase("executing")).toBe(false);
     expect(isKnownPhase("SOMETHING_ELSE")).toBe(false);
     expect(isKnownPhase(undefined)).toBe(false);
+  });
+});
+
+describe("MCP tool classification", () => {
+  it("recognizes MCP server tools and Pi MCP resource tools", () => {
+    expect(isMcpTool("mcp__github__create_issue")).toBe(true);
+    expect(isMcpTool("edit")).toBe(false);
+    expect(isMcpResourceTool("read_mcp_resource")).toBe(true);
+    expect(isMcpFamilyTool("list_mcp_resources")).toBe(true);
+    expect(isMcpFamilyTool("mcp__filesystem__write_file")).toBe(true);
+    expect(isMcpFamilyTool("edit")).toBe(false);
+  });
+
+  it("trusts only explicit read-only annotations and the known read-only resource tools", () => {
+    expect(mcpToolIsReadOnly("mcp__docs__search", { readOnlyHint: true })).toBe(true);
+    expect(mcpToolIsReadOnly("mcp__github__create_issue", { destructiveHint: true })).toBe(false);
+    expect(mcpToolIsReadOnly("mcp__unknown__tool", {})).toBe(false);
+    expect(mcpToolIsReadOnly("read_mcp_resource")).toBe(true);
   });
 });
 

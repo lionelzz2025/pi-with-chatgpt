@@ -40,6 +40,9 @@
     "ignore": "^7.0.5",
     "zod": "^3.25.0"
   },
+  "optionalDependencies": {
+    "playwright": "^1.64.0"
+  },
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.0",

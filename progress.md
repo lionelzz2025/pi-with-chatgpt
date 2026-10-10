@@ -77,6 +77,16 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - Require interactive confirmation for dangerous bash commands (recursive deletes, `git push`, `git reset --hard`, `git clean -f`, discarding uncommitted changes, branch deletion, `sudo`, piping downloads into a shell, power/disk commands, package publishing). No confirmation UI or a declined prompt blocks the command.
 - Fix `resolveStateDir` to build injected-platform paths with that platform's separator rules (Windows test failures), and add a single retry to the MCP integration suite for transient fetch failures under full parallel load.
 
+## Phase 6 Playwright foundation checkpoint (2026-05-28)
+
+- Added Playwright as an optional dependency and dynamically loads it only when `PlaywrightTransport.initialize()` is used; regular CLI/core use remains independent of browser automation.
+- Added `src/control/transports/playwright.ts`: launches a persistent app-owned browser profile under `<stateDir>/browser-profile`, opens/saves workspace conversation sessions, and closes the context. Message exchange deliberately throws a clear not-implemented error; no brittle ChatGPT UI selectors are enabled.
+- Added `src/control/session-store.ts`: stores a per-workspace conversation URL in secure state storage; validates workspace IDs and HTTPS ChatGPT hosts.
+- Added tests for profile behavior, URL reuse, initialization, disabled exchange, secure session URL persistence, and rejection of invalid host/ID.
+- Verification: typecheck/build passed; focused tests (2 files, 6 tests) passed. Full `pnpm test` had 16/17 files and 161/162 tests pass; one MCP integration case errored with `fetch failed` / `ECONNRESET`, then retry encountered a fixture collision (`git mv .npmrc src/public.txt failed: fatal: destination exists`). The exact case passed alone with one worker.
+- Still incomplete: real browser login verification, composer send/reply parsing, timeout/retry/reconnect, Developer Mode/connector setup, pairing automation, and connector lifecycle automation. `task_plan.md` leaves these unchecked; next step is `PlaywrightTransport.exchange` and real browser validation.
+- Existing uncommitted Phase 4.5 changes were preserved. Untracked `.pi/`, `.qoder/`, `.zvec-grep/` directories were not included.
+
 ## Next
 
 1. Implement the automated ChatGPT transport (Phase 6 — Playwright): own browser profile, login reuse, conversation URL persistence, control-message send/parse, reconnect strategy.

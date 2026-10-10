@@ -12,6 +12,8 @@ interface HarnessOptions {
   approvalMode?: "plan" | "auto";
   cwd?: string;
   initialEntries?: Array<{ type: string; customType: string; data: unknown }>;
+  tools?: Array<{ name: string; annotations?: Record<string, boolean> }>;
+  noToolApi?: boolean;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -106,6 +108,7 @@ function createHarness(options: HarnessOptions = {}) {
   };
 
   registerPiWithChatGPT({
+    ...(!options.noToolApi ? { getAllTools: () => options.tools ?? [] } : {}),
     exec,
     registerCommand(name: string, opts: { handler(args: string, ctx: any): Promise<void> | void }) {
       commands[name] = opts;
@@ -424,6 +427,110 @@ describe("Pi extension commands", () => {
       const released = await handlers.tool_call[0]({ toolName: "edit", input: { path: "src/a.ts" } }, ctx);
       expect(released).toBeUndefined();
     }
+  });
+
+  it("gates MCP tools by read-only annotations in PLANNING and REVIEWING", async () => {
+    const toolName = "mcp__github__create_issue";
+    const readOnlyTool = "mcp__docs__search";
+    for (const phase of ["PLANNING", "PLAN_READY", "REVIEWING"]) {
+      const cwd = `/workspace/mcp-${phase.toLowerCase()}`;
+      const initialEntries = [
+        {
+          type: "custom",
+          customType: "p2c-workflow-v1",
+          data: {
+            cwd,
+            state: {
+              taskId: `p2c_mcp_${phase.toLowerCase()}`,
+              workspaceName: "mcp-review",
+              goal: "Gate MCP tools",
+              iteration: 0,
+              phase,
+            },
+          },
+        },
+      ];
+      const { handlers, ctx } = createHarness({
+        cwd,
+        initialEntries,
+        tools: [
+          { name: toolName, annotations: { readOnlyHint: false, destructiveHint: true } },
+          { name: readOnlyTool, annotations: { readOnlyHint: true } },
+        ],
+      });
+      await handlers.session_start[0]({}, ctx);
+
+      const mutation = await handlers.tool_call[0]({ toolName, input: { issue_title: "hello" } }, ctx);
+      expect(mutation).toMatchObject({ block: true });
+      expect(mutation.reason).toContain(phase);
+      expect(mutation.reason).toContain(toolName);
+
+      const readOnly = await handlers.tool_call[0]({ toolName: readOnlyTool, input: { query: "docs" } }, ctx);
+      expect(readOnly).toBeUndefined();
+
+      const resource = await handlers.tool_call[0]({ toolName: "read_mcp_resource" }, ctx);
+      expect(resource).toBeUndefined();
+    }
+  });
+
+  it("treats MCP tools with missing annotations as mutations and only permits them in execution phases", async () => {
+    const toolName = "mcp__filesystem__write_file";
+    const reviewCwd = "/workspace/mcp-unannotated-review";
+    const reviewEntries = [
+      {
+        type: "custom",
+        customType: "p2c-workflow-v1",
+        data: {
+          cwd: reviewCwd,
+          state: {
+            taskId: "p2c_mcp_unannotated",
+            workspaceName: "mcp-review",
+            goal: "Fail closed for missing annotations",
+            iteration: 0,
+            phase: "REVIEWING",
+          },
+        },
+      },
+    ];
+    const review = createHarness({ cwd: reviewCwd, initialEntries: reviewEntries, tools: [{ name: toolName }] });
+    await review.handlers.session_start[0]({}, review.ctx);
+    const blocked = await review.handlers.tool_call[0]({ toolName, input: { path: "src/a.ts" } }, review.ctx);
+    expect(blocked).toMatchObject({ block: true });
+
+    const executing = createHarness({ approvalMode: "auto", tools: [{ name: toolName }] });
+    await executing.commands["p2c"].handler("Use a mutating MCP tool", executing.ctx);
+    const allowed = await executing.handlers.tool_call[0]({ toolName, input: { path: "src/a.ts" } }, executing.ctx);
+    expect(allowed).toBeUndefined();
+  });
+
+  it("allows mutating MCP tools during FIXING", async () => {
+    const toolName = "mcp__filesystem__write_file";
+    const { commands, handlers, ctx } = createHarness({
+      reviewReply: "FIX",
+      tools: [{ name: toolName, annotations: { readOnlyHint: false, destructiveHint: true } }],
+    });
+    await commands["p2c"].handler("Fix through MCP", ctx);
+    await handlers.agent_end[0]({}, ctx);
+    await commands["p2c-review"].handler("", ctx);
+
+    const allowed = await handlers.tool_call[0]({ toolName, input: { path: "src/a.ts" } }, ctx);
+    expect(allowed).toBeUndefined();
+  });
+
+  it("blocks MCP tools completely when their descriptor or getAllTools API is unavailable", async () => {
+    const toolName = "mcp__unknown__mutate";
+    const executing = createHarness({ approvalMode: "auto" });
+    await executing.commands["p2c"].handler("Fail closed for unknown MCP tools", executing.ctx);
+    const missingDescriptor = await executing.handlers.tool_call[0]({ toolName }, executing.ctx);
+    expect(missingDescriptor).toMatchObject({ block: true });
+    expect(missingDescriptor.reason).toContain("Cannot verify");
+    expect(missingDescriptor.reason).toContain("/p2c-stop");
+
+    const noApi = createHarness({ approvalMode: "auto", noToolApi: true });
+    await noApi.commands["p2c"].handler("Fail closed without MCP annotations API", noApi.ctx);
+    const unavailable = await noApi.handlers.tool_call[0]({ toolName }, noApi.ctx);
+    expect(unavailable).toMatchObject({ block: true });
+    expect(unavailable.reason).toContain("Cannot verify");
   });
 
   it("fails closed when the persisted phase is unrecognized", async () => {

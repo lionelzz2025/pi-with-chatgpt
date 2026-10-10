@@ -782,6 +782,36 @@ PLAN → EXECUTE → REVIEW → DONE
 
 在 REVIEWING 状态手工诱导 Pi 修改文件时，Extension 必须阻止。
 
+> 注：Phase 4 完成时只覆盖内置 `bash` / `write` / `edit`。Pi 1.1.0 引入 MCP client 后的 `mcp__*` 工具覆盖由下方 Phase 4.5 承接。
+
+---
+
+# Phase 4.5 — MCP-aware Execution Gate（Pi 1.1.0）
+
+目标：消除 Pi 1.1.0 引入 MCP client 后的门禁绕过。Pi 1.1.0 把 MCP server 工具以 `mcp__<server>__<tool>` 注入同一个 `tool_call` / `tool_result` 管线，但现有门禁只识别内置 `bash` / `write` / `edit`，导致非只读 MCP 工具在 PLANNING / PLAN_READY / REVIEWING 阶段绕过 phase gate 与 write-target 策略。
+
+背景：见 `findings.md` 的 “Pi 1.1.0 MCP support impact”。
+
+任务：
+
+- [x] `tool_call` gate 识别 `mcp__` 前缀工具（`src/control/security-gate.ts` + `extensions/index.ts`）
+- [x] 通过 `pi.getAllTools()` 读取 `readOnlyHint` / `destructiveHint` 注解对 MCP 工具分类
+- [x] 只读工具放行：`readOnlyHint === true`，以及 MCP 资源工具 `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`
+- [x] 非只读 MCP 工具仅在 EXECUTING / FIXING 允许，其余状态阻止（fail closed）
+- [x] 注解缺失时按 MCP 默认处理（非只读、可能破坏性）：在门禁冻结状态阻止，不默认放行
+- [x] 运行时无法读取注解（无 `getAllTools`）或找不到工具描述时对 `mcp__*` fail closed，并给出 `/p2c-stop` 释放说明
+- [x] 明确 write-target 检查边界：MCP 工具 input 形状不可靠，不做路径推断，非只读即按 phase 管控；路径策略仅对内置 write/edit 生效
+- [x] 更新 Extension API 类型声明以包含可选的 `getAllTools()`（保持旧运行时 fail closed）
+- [x] 单元测试覆盖 `mcp__*`：PLANNING/PLAN_READY/REVIEWING 阻止、EXECUTING/FIXING 放行、只读放行、缺注解按 mutation 处理、无注解 API/工具描述时完全 fail closed
+- [x] 同步更新 `findings.md` / `progress.md`
+
+验收：
+
+- REVIEWING / PLANNING 状态下触发 `mcp__<server>__<write-like-tool>` 必须被阻止；
+- EXECUTING / FIXING 下同一工具放行；
+- 只读 MCP 工具与资源工具在任意阶段放行；
+- 无法获取注解时 `mcp__*` 默认被阻止。
+
 ---
 
 # Phase 5 — Plan Approval
@@ -811,13 +841,15 @@ PLAN → EXECUTE → REVIEW → DONE
 
 - [x] 抽象 `ChatGptTransport` 接口并让 ManualTransport 通过统一接口运行
 
-- [ ] 加入 Playwright 依赖或独立 browser package
-- [ ] 独立 browser profile
-- [ ] ChatGPT 登录复用
+Phase 6 本次交付了独立的浏览器 profile 启动骨架和 workspace 级会话 URL 存储；自动消息交换、登录检测、回复解析及连接器自动化仍未实现，故本阶段不可标记完成。
+
+- [x] 加入可选 Playwright 依赖（核心 CLI 不强制安装）
+- [x] 独立 browser profile（state dir 下的 `browser-profile/`）
+- [ ] ChatGPT 登录复用（持久化 profile 已提供，尚未做真实浏览器登录验收）
 - [ ] Developer mode / connector setup 自动化
 - [ ] Pairing code 自动输入
-- [ ] conversation URL 持久化
-- [ ] INIT/EXECUTED 消息自动发送
+- [x] conversation URL 持久化（workspace 级、验证 ChatGPT HTTPS host）
+- [ ] INIT/EXECUTED 消息自动发送（当前 `exchange()` 明确报未实现）
 - [ ] PLAN/DONE/BLOCKED 回复解析
 - [ ] timeout/retry/reconnect 策略
 - [ ] connector 地址变化时 Delete + recreate
@@ -870,6 +902,7 @@ PLAN → EXECUTE → REVIEW → DONE
 
 - 只有 EXECUTING/FIXING 状态允许 mutation tools
 - review 阶段冻结 Pi 写操作
+- Pi 1.1.0 MCP 工具（`mcp__*`）与内置 mutation 工具同等管控：按 `readOnlyHint` / `destructiveHint` 分类，非只读在非执行态一律阻止；注解缺失或无法读取时 fail closed
 - browser profile 不进入 workspace
 - ChatGPT cookie/token 不进入 workspace
 - tunnel credentials 继续只存在 OS state dir
@@ -903,6 +936,8 @@ tests/pi-extension/
   protocol.test.ts
 ```
 
+MCP gate regression cases currently extend `tests/security-gate.test.ts` and `tests/pi-package.test.ts` (the repository's existing flat test layout).
+
 浏览器测试：
 
 ```text
@@ -916,6 +951,9 @@ tests/browser/
 
 - 不安装 Codex 时 core 正常运行
 - planning/review 时 Pi mutation tool 被拒绝
+- planning/review 时非只读 MCP 工具（`mcp__*`）被拒绝，EXECUTING/FIXING 放行
+- MCP 只读工具与资源工具在任意阶段放行
+- 无法读取 MCP 注解时 `mcp__*` 默认被阻止
 - iteration 超限
 - ChatGPT BLOCKED
 - ChatGPT 回复格式错误
@@ -1047,4 +1085,4 @@ Pi Extension 驱动
 
 ## Next Step
 
-**Phase 6 — PlaywrightTransport 骨架**：在已抽象的 `ChatGptTransport` 接口后加入 Playwright 依赖与独立 browser profile，先落地 ChatGPT 登录复用与 conversation URL 持久化；控制协议、审批策略、执行证据与 Review 循环继续由 Extension 持有。
+**Phase 6 — PlaywrightTransport exchange**：实现 ChatGPT Web 的登录态检测、发送控制消息及 PLAN/DONE/BLOCKED 回复解析；使用真实 UI 验收前保持自动 exchange 禁用。后续再实现 timeout/retry/reconnect 与 connector 生命周期自动化。
