@@ -18,14 +18,17 @@ function defaultStateDir(name: string, opts: {
   platform: NodeJS.Platform;
 }): string {
   const { env, home, platform } = opts;
+  // Join with the target platform's separator rules so resolution is
+  // deterministic when tests inject a platform other than the host's.
+  const join = platform === "win32" ? path.win32.join : path.posix.join;
   switch (platform) {
     case "darwin":
-      return path.join(home, "Library", "Application Support", name);
+      return join(home, "Library", "Application Support", name);
     case "win32":
-      return path.join(env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), name);
+      return join(env.LOCALAPPDATA ?? join(home, "AppData", "Local"), name);
     default: {
-      const base = env.XDG_STATE_HOME ?? path.join(home, ".local", "state");
-      return path.join(base, name);
+      const base = env.XDG_STATE_HOME ?? join(home, ".local", "state");
+      return join(base, name);
     }
   }
 }

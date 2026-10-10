@@ -207,7 +207,10 @@ describe("Pi extension commands", () => {
     expect(sentMessages[0]).toContain("Edit the implementation");
     expect(sentMessages[0]).toContain("records execution evidence automatically");
 
-    const executingGate = await handlers.tool_call[0]({ toolName: "edit" }, ctx);
+    const executingGate = await handlers.tool_call[0](
+      { toolName: "edit", input: { path: "src/a.ts" } },
+      ctx
+    );
     expect(executingGate).toBeUndefined();
 
     await handlers.tool_result[0](
@@ -255,7 +258,10 @@ describe("Pi extension commands", () => {
     expect(sentMessages[1]).toContain("iteration 1");
     expect(sentMessages[1]).toContain("Address the failing edge case");
 
-    const fixingGate = await handlers.tool_call[0]({ toolName: "bash" }, ctx);
+    const fixingGate = await handlers.tool_call[0](
+      { toolName: "bash", input: { command: "pnpm test" } },
+      ctx
+    );
     expect(fixingGate).toBeUndefined();
 
     await handlers.agent_end[0]({}, ctx);
@@ -323,5 +329,126 @@ describe("Pi extension commands", () => {
 
     expect(sentMessages).toHaveLength(0);
     expect(notifications.some((item) => item.message.includes("3-iteration safety limit"))).toBe(true);
+  });
+
+  it("blocks sensitive, .git, out-of-workspace, and unverifiable write targets during EXECUTING", async () => {
+    const { commands, handlers, ctx } = createHarness({ approvalMode: "auto" });
+    await commands["p2c"].handler("Harden the execution gate", ctx);
+
+    const sensitive = await handlers.tool_call[0]({ toolName: "write", input: { path: ".env" } }, ctx);
+    expect(sensitive).toMatchObject({ block: true });
+    expect(sensitive.reason).toContain("sensitive-file");
+
+    const example = await handlers.tool_call[0]({ toolName: "write", input: { path: ".env.example" } }, ctx);
+    expect(example).toBeUndefined();
+
+    const escape = await handlers.tool_call[0](
+      { toolName: "edit", input: { file_path: "../outside.ts" } },
+      ctx
+    );
+    expect(escape).toMatchObject({ block: true });
+    expect(escape.reason).toContain("outside the workspace");
+
+    const gitInternal = await handlers.tool_call[0](
+      { toolName: "write", input: { path: ".git/config" } },
+      ctx
+    );
+    expect(gitInternal).toMatchObject({ block: true });
+
+    const unverifiable = await handlers.tool_call[0](
+      { toolName: "write", input: { target: "src/a.ts" } },
+      ctx
+    );
+    expect(unverifiable).toMatchObject({ block: true });
+    expect(unverifiable.reason).toContain("Cannot verify");
+  });
+
+  it("requires confirmation for dangerous bash commands during EXECUTING", async () => {
+    const { commands, handlers, confirm, ctx } = createHarness({ approvalMode: "auto" });
+    await commands["p2c"].handler("Push the branch", ctx);
+
+    const allowed = await handlers.tool_call[0](
+      { toolName: "bash", input: { command: "git push origin main" } },
+      ctx
+    );
+    expect(allowed).toBeUndefined();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toBe("Confirm dangerous command");
+
+    confirm.mockResolvedValue(false);
+    const denied = await handlers.tool_call[0]({ toolName: "bash", input: { command: "rm -rf build" } }, ctx);
+    expect(denied).toMatchObject({ block: true });
+    expect(denied.reason).toContain("not approved");
+
+    const normal = await handlers.tool_call[0]({ toolName: "bash", input: { command: "pnpm test" } }, ctx);
+    expect(normal).toBeUndefined();
+  });
+
+  it("fails closed for dangerous commands when no confirmation UI is available", async () => {
+    const { commands, handlers, ctx } = createHarness({ approvalMode: "auto" });
+    await commands["p2c"].handler("Dangerous command without UI", ctx);
+    (ctx.ui as { confirm?: unknown }).confirm = undefined;
+
+    const gate = await handlers.tool_call[0]({ toolName: "bash", input: { command: "sudo rm -rf /" } }, ctx);
+    expect(gate).toMatchObject({ block: true });
+    expect(gate.reason).toContain("no confirmation UI");
+  });
+
+  it("fails closed in abnormal terminal states until the workflow is stopped", async () => {
+    for (const phase of ["ERROR", "BLOCKED"]) {
+      const cwd = `/workspace/abnormal-${phase.toLowerCase()}`;
+      const initialEntries = [
+        {
+          type: "custom",
+          customType: "p2c-workflow-v1",
+          data: {
+            cwd,
+            state: {
+              taskId: `p2c_${phase.toLowerCase()}`,
+              workspaceName: "abnormal",
+              goal: "Recover from an abnormal state",
+              iteration: 0,
+              phase,
+            },
+          },
+        },
+      ];
+      const { commands, handlers, ctx } = createHarness({ cwd, initialEntries });
+      await handlers.session_start[0]({}, ctx);
+
+      const gate = await handlers.tool_call[0]({ toolName: "edit", input: { path: "src/a.ts" } }, ctx);
+      expect(gate).toMatchObject({ block: true });
+      expect(gate.reason).toContain("/p2c-stop");
+
+      await commands["p2c-stop"].handler("", ctx);
+      const released = await handlers.tool_call[0]({ toolName: "edit", input: { path: "src/a.ts" } }, ctx);
+      expect(released).toBeUndefined();
+    }
+  });
+
+  it("fails closed when the persisted phase is unrecognized", async () => {
+    const cwd = "/workspace/corrupt-state";
+    const initialEntries = [
+      {
+        type: "custom",
+        customType: "p2c-workflow-v1",
+        data: {
+          cwd,
+          state: {
+            taskId: "p2c_corrupt",
+            workspaceName: "corrupt",
+            goal: "Corrupted persisted state",
+            iteration: 0,
+            phase: "SOMETHING_ELSE",
+          },
+        },
+      },
+    ];
+    const { handlers, ctx } = createHarness({ cwd, initialEntries });
+    await handlers.session_start[0]({}, ctx);
+
+    const gate = await handlers.tool_call[0]({ toolName: "bash", input: { command: "pnpm test" } }, ctx);
+    expect(gate).toMatchObject({ block: true });
+    expect(gate.reason).toContain("unrecognized state");
   });
 });

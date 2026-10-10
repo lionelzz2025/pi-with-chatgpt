@@ -28,6 +28,11 @@ Do **not** paste source code, diffs, or raw logs into ChatGPT. ChatGPT should fe
 
 During an active workflow, the extension blocks `write`, `edit`, and `bash` unless the state is `EXECUTING` or `FIXING`. This keeps planning and review phases read-only on the Pi side as well.
 
+The gate also fails closed. `ERROR`/`BLOCKED` workflows and unrecognized persisted states keep local mutation frozen until `/p2c-stop` (or a new `/p2c` task) releases them; after `DONE` the gate is open again. During `EXECUTING`/`FIXING`:
+
+- `write`/`edit` targets must stay inside the workspace, outside `.git/`, and outside the sensitive-file policy (`.env*` with `.env.example` allowed, keys, credentials, SSH material). Unverifiable tool inputs are blocked.
+- `bash` commands on the confirmation list — recursive deletes, `git push`, `git reset --hard`, `git clean -f`, discarding uncommitted changes, branch deletion, `sudo`, piping downloads into a shell, power/disk commands, package publishing — ask for interactive confirmation. Without a confirmation UI, or when declined, they are blocked.
+
 ## State and execution evidence
 
 Workflow state is persisted into Pi session entries. Reloading or resuming the same Pi session restores the latest P2C state, including a pending plan or review round.

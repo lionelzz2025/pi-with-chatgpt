@@ -1,6 +1,17 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ManualTransport } from "../src/control/transports/manual.js";
+import {
+  MUTATING_TOOLS,
+  MUTATION_PHASES,
+  UNGUARDED_PHASES,
+  checkWriteTarget,
+  dangerousCommandLabel,
+  extractMutationPath,
+  isKnownPhase,
+  type WorkflowPhase,
+} from "../src/control/security-gate.js";
+import { IgnoreRules } from "../src/workspace/ignore.js";
 
 interface ExecResult {
   stdout: string;
@@ -8,17 +19,6 @@ interface ExecResult {
   code: number | null;
   killed?: boolean;
 }
-
-type WorkflowPhase =
-  | "IDLE"
-  | "PLANNING"
-  | "PLAN_READY"
-  | "EXECUTING"
-  | "REVIEWING"
-  | "FIXING"
-  | "DONE"
-  | "BLOCKED"
-  | "ERROR";
 
 type ControlReplyState = "PLAN" | "FIX" | "DONE";
 type ApprovalMode = "plan" | "auto";
@@ -86,7 +86,7 @@ interface ExtensionAPI {
     handler: (
       event: ToolCallEvent | ToolResultEvent | unknown,
       ctx: CommandContext
-    ) => void | Promise<void> | { block: true; reason: string }
+    ) => void | { block: true; reason: string } | Promise<void | { block: true; reason: string }>
   ): void;
   sendUserMessage?(message: string, options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): void | Promise<void>;
   appendEntry?(customType: string, data?: unknown): void;
@@ -135,11 +135,23 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const p2cBin = path.join(packageRoot, "bin", "p2c.js");
 const workflowByWorkspace = new Map<string, WorkflowState>();
 const executionByWorkspace = new Map<string, ExecutionObservation>();
-const MUTATING_TOOLS = new Set(["bash", "write", "edit"]);
-const MUTATING_PHASES = new Set<WorkflowPhase>(["EXECUTING", "FIXING"]);
+const ignoreRulesByWorkspace = new Map<string, IgnoreRules>();
 const TERMINAL_PHASES = new Set<WorkflowPhase>(["IDLE", "DONE", "BLOCKED", "ERROR"]);
 const WORKFLOW_ENTRY_TYPE = "p2c-workflow-v1";
 const MAX_EXECUTION_ITERATIONS = 3;
+
+function ignoreRulesFor(cwd: string): IgnoreRules {
+  let rules = ignoreRulesByWorkspace.get(cwd);
+  if (!rules) {
+    rules = new IgnoreRules(cwd);
+    ignoreRulesByWorkspace.set(cwd, rules);
+  }
+  return rules;
+}
+
+function inputRecord(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+}
 
 function parseLastJson<T>(stdout: string): T {
   const line = stdout.trim().split("\n").filter(Boolean).at(-1);
@@ -403,14 +415,78 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("tool_call", (event, ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
     const toolEvent = event as ToolCallEvent;
-    const state = activeWorkflow(ctx.cwd);
-    if (!state || !MUTATING_TOOLS.has(toolEvent.toolName) || MUTATING_PHASES.has(state.phase)) return;
-    return {
-      block: true,
-      reason: `Pi with ChatGPT workflow ${state.taskId} is in ${state.phase}. Local mutation is only allowed during EXECUTING or FIXING.`,
-    };
+    const state = workflowByWorkspace.get(ctx.cwd);
+    if (!state || !MUTATING_TOOLS.has(toolEvent.toolName)) return;
+
+    if (!isKnownPhase(state.phase)) {
+      return {
+        block: true,
+        reason: `Pi with ChatGPT workflow ${state.taskId} has an unrecognized state (${String(
+          state.phase
+        )}); failing closed. Run /p2c-stop to release the workflow freeze.`,
+      };
+    }
+    if (!MUTATION_PHASES.has(state.phase)) {
+      if (UNGUARDED_PHASES.has(state.phase)) return;
+      const release =
+        state.phase === "ERROR" || state.phase === "BLOCKED"
+          ? " Run /p2c-stop to release the workflow freeze."
+          : "";
+      return {
+        block: true,
+        reason: `Pi with ChatGPT workflow ${state.taskId} is in ${state.phase}. Local mutation is only allowed during EXECUTING or FIXING.${release}`,
+      };
+    }
+
+    if (toolEvent.toolName === "bash") {
+      const command = inputRecord(toolEvent.input).command;
+      if (typeof command !== "string" || !command.trim()) {
+        return {
+          block: true,
+          reason: `Cannot verify the bash command for workflow ${state.taskId}; failing closed. Run /p2c-stop to release.`,
+        };
+      }
+      const danger = dangerousCommandLabel(command);
+      if (!danger) return;
+      const confirm = ctx.ui?.confirm;
+      if (!confirm) {
+        return {
+          block: true,
+          reason: `Command requires confirmation (${danger}) but this Pi runtime exposes no confirmation UI; failing closed. Run the command yourself, or /p2c-stop to release the workflow.`,
+        };
+      }
+      let approved = false;
+      try {
+        approved = await confirm(
+          "Confirm dangerous command",
+          `Workflow ${state.taskId} (${state.phase}) wants to run a ${danger} command:\n\n${command}`
+        );
+      } catch {
+        approved = false;
+      }
+      if (approved) return;
+      return {
+        block: true,
+        reason: `The ${danger} command was not approved for workflow ${state.taskId}.`,
+      };
+    }
+
+    const target = extractMutationPath(toolEvent.input);
+    if (!target) {
+      return {
+        block: true,
+        reason: `Cannot verify the ${toolEvent.toolName} target for workflow ${state.taskId}; failing closed. Run /p2c-stop to release.`,
+      };
+    }
+    const violation = checkWriteTarget(ctx.cwd, target, ignoreRulesFor(ctx.cwd));
+    if (violation) {
+      return {
+        block: true,
+        reason: `Blocked ${toolEvent.toolName} for workflow ${state.taskId}: ${violation}.`,
+      };
+    }
   });
 
   pi.on("tool_result", (event, ctx) => {
@@ -461,6 +537,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
           iteration: 0,
           phase: "PLANNING",
         };
+        ignoreRulesByWorkspace.delete(ctx.cwd);
         saveWorkflow(pi, ctx, state);
         const reply = await new ManualTransport(ctx.ui.editor).exchange({
           title: "ChatGPT planning round",
@@ -553,6 +630,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
       const state = workflowByWorkspace.get(ctx.cwd);
       workflowByWorkspace.delete(ctx.cwd);
       executionByWorkspace.delete(ctx.cwd);
+      ignoreRulesByWorkspace.delete(ctx.cwd);
       setWorkflowStatus(ctx);
       persistWorkflow(pi, ctx, null);
       ctx.ui.notify(state ? `Stopped workflow ${state.taskId}.` : "No active Pi with ChatGPT workflow.", "info");

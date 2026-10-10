@@ -1,6 +1,6 @@
 # Pi with ChatGPT — Progress
 
-Last updated: 2026-08-30
+Last updated: 2026-10-10
 
 ## Overall
 
@@ -69,11 +69,18 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - Add direct transport regression coverage for reply normalization and missing/unchanged manual input.
 - Keep transport state separate from the orchestration state machine so Playwright can be added as another implementation.
 
+## Completed in the execution-gate-hardening checkpoint
+
+- Move gate policy into `src/control/security-gate.ts` (phases, mutation tools, target checks, dangerous-command list) with direct unit coverage.
+- Fail closed on abnormal states: `ERROR` and `BLOCKED` workflows and unrecognized persisted phases keep `write`/`edit`/`bash` blocked until `/p2c-stop` (or a new `/p2c` task) releases the freeze. `DONE` releases the gate.
+- Enforce a write-target policy during `EXECUTING`/`FIXING`: targets must stay inside the workspace, outside `.git/`, and outside the sensitive-file policy (`.env.example` remains allowed). Unrecognized write/edit input shapes fail closed.
+- Require interactive confirmation for dangerous bash commands (recursive deletes, `git push`, `git reset --hard`, `git clean -f`, discarding uncommitted changes, branch deletion, `sudo`, piping downloads into a shell, power/disk commands, package publishing). No confirmation UI or a declined prompt blocks the command.
+- Fix `resolveStateDir` to build injected-platform paths with that platform's separator rules (Windows test failures), and add a single retry to the MCP integration suite for transient fetch failures under full parallel load.
+
 ## Next
 
-1. Strengthen the execution gate with protected paths, dangerous-command confirmation, and explicit fail-closed behavior for abnormal states.
+1. Implement the automated ChatGPT transport (Phase 6 — Playwright): own browser profile, login reuse, conversation URL persistence, control-message send/parse, reconnect strategy.
 2. Improve execution evidence beyond heuristic test-command detection, without storing raw logs or secrets.
-3. Introduce a transport interface and implement automated ChatGPT transport (Playwright or another browser control layer) behind the same control protocol.
-4. Finish P2C naming migration for config/ignore files and remaining docs while keeping backwards compatibility.
-5. Add real Pi integration/e2e coverage in addition to the mocked extension tests.
-6. Extend plan approval with explicit reject/revise UX if needed after automated transport lands.
+3. Finish P2C naming migration for config/ignore files and remaining docs while keeping backwards compatibility.
+4. Add real Pi integration/e2e coverage in addition to the mocked extension tests.
+5. Extend plan approval with explicit reject/revise UX if needed after automated transport lands.

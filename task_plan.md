@@ -774,8 +774,8 @@ PLAN → EXECUTE → REVIEW → DONE
 - [x] 注册 `tool_call` hook
 - [x] PLANNING/REVIEWING 时禁止 write/edit/bash
 - [x] EXECUTING/FIXING 时恢复权限
-- [ ] 状态异常 fail closed
-- [ ] 增加 protected paths 基础策略
+- [x] 状态异常 fail closed（ERROR/BLOCKED/未知持久化状态冻结变更，直到 /p2c-stop）
+- [x] 增加 protected paths 基础策略（工作区边界、`.git/` 内部、敏感文件策略；危险命令需确认）
 - [x] 增加相关单元测试
 
 验收：
@@ -794,7 +794,7 @@ PLAN → EXECUTE → REVIEW → DONE
 - [x] `auto`
 - [x] `plan`
 - [x] PLAN_READY UI
-- [ ] approve / reject / revise
+- [ ] approve / reject / revise（approve 已实现；reject / revise 待做）
 - [x] approved plan 持久化 task/session 信息
 
 验收：
@@ -1042,3 +1042,9 @@ Pi Extension 驱动
 第一里程碑应是：
 
 > **完全不安装 Codex，也能启动 Core；Pi Extension 能加载；ManualTransport 能跑通一次完整 PLAN → EXECUTE → REVIEW → DONE。**
+
+---
+
+## Next Step
+
+**Phase 6 — PlaywrightTransport 骨架**：在已抽象的 `ChatGptTransport` 接口后加入 Playwright 依赖与独立 browser profile，先落地 ChatGPT 登录复用与 conversation URL 持久化；控制协议、审批策略、执行证据与 Review 循环继续由 Extension 持有。

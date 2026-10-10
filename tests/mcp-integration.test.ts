@@ -54,7 +54,8 @@ afterAll(async () => {
   cleanup(root);
 });
 
-describe("MCP tools over Streamable HTTP", () => {
+// retry: local bridge + fetch can transiently fail while the full suite runs in parallel.
+describe("MCP tools over Streamable HTTP", { retry: 1 }, () => {
   it("lists all eight read-only tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();

@@ -1,6 +1,6 @@
 # Pi with ChatGPT — Findings
 
-Last updated: 2026-08-30
+Last updated: 2026-10-10
 
 ## Architecture findings
 
@@ -27,6 +27,18 @@ The extension can observe Pi's bash tool results and record a safe summary at `a
 ### Security needs two layers
 
 The old Codex `writable_roots` mechanism is not a Pi security model. For Pi, the extension should enforce workflow-phase permissions (`write`/`edit`/`bash` only during execution/fix) and later add command/path policies. OS/container sandboxing can remain an optional stronger boundary.
+
+### Fail closed means abnormal states, not every paused state
+
+`planner/review` pauses (`PLANNING`, `PLAN_READY`, `REVIEWING`) already blocked mutation. The hardening adds the abnormal cases: `ERROR`/`BLOCKED` workflows and unrecognized persisted phases now keep mutation frozen until `/p2c-stop` (or a fresh `/p2c` task) releases them, while `DONE` releases immediately. This keeps "the workflow failed" from silently becoming "Pi is unsupervised again".
+
+### The write-target policy should reuse the read policy
+
+Pi-side write protection checks three things for `write`/`edit` during `EXECUTING`/`FIXING`: the target stays inside the workspace, outside `.git/`, and outside the sensitive-file patterns that already govern MCP reads (`.env.example` stays allowed). Sharing one rule set means "what ChatGPT cannot read" and "what Pi should not silently rewrite" cannot drift apart. Unrecognized write/edit input shapes fail closed with an actionable reason; this is accepted over silently unguarding edits because a Pi runtime with different tool-input keys should be discovered loudly, not bypass the gate.
+
+### Dangerous commands are about irreversibility, not scariness
+
+The confirmation list is deliberately small: recursive deletes, `git push`, `git reset --hard`, `git clean -f`, discard-changes checkout/restore, branch deletion, `sudo`, piping downloads into a shell, power/disk commands, and package publishing. Ordinary loop commands (`pnpm test`, `git commit`, `git checkout -b`) stay frictionless. Confirmation goes through `ctx.ui.confirm`; a runtime without a confirmation UI, or a declined prompt, blocks the command (fail closed) with `/p2c-stop` as the release hatch.
 
 ## Compatibility findings
 
@@ -55,6 +67,9 @@ The orchestrator only needs a small control-plane primitive: send one structured
 - The execution collector records changed-file count rather than file names. ChatGPT can obtain the real status and diff through MCP.
 - The three-iteration limit is currently a fixed V0 safety constant rather than configuration.
 - Manual V0 validates structured ChatGPT replies but does not cryptographically bind them to a browser session; task-id checking only protects against accidental cross-task paste.
+- Gate target checks cover `write`/`edit` only; `bash` commands are not path-analyzed, so a shell command can still write wherever the OS allows. OS/container sandboxing remains the strong boundary for that.
+- The write-target policy has no per-task escape hatch yet; a task that legitimately needs to edit `.env` during execution is blocked until the workflow is stopped and the change is made manually (or the policy is adjusted).
+- Dangerous-command confirmation depends on an interactive `ctx.ui.confirm`; runtimes without it block the confirmation-list commands outright rather than allowing them unsupervised.
 
 ## Implementation lessons
 
@@ -63,3 +78,6 @@ The orchestrator only needs a small control-plane primitive: send one structured
 - Persist state at every meaningful phase transition. A single end-of-task snapshot is not enough for reload safety during `PLAN_READY` or `REVIEWING`.
 - Automatic records should be best-effort: failure to write the evidence record should warn but should not prevent the workflow from reaching ChatGPT review, because the reviewer can still inspect git state directly through MCP.
 - The control protocol should be tolerant enough for manual use but strict on `STATE` and task-id mismatches so workflow errors fail visibly instead of silently advancing the state machine.
+- When a resolution function accepts an injected platform for testability, path construction must follow that platform's rules (`path.win32` vs `path.posix`) instead of the host's `path.join`; otherwise the tests pass on the author's platform and fail everywhere else (this broke `resolveStateDir` on Windows).
+- The MCP Streamable HTTP integration suite can transiently fail with `fetch failed` while the full suite runs in parallel; a single describe-level retry was added there. If it recurs with retry exhausted, look at port/timing contention between suites that spawn local bridges.
+- Gate detection bugs are easiest to catch with a table of realistic commands; combined short flags (`-fd`) and long options (`--recursive`) both initially slipped through naive character-class regexes.
