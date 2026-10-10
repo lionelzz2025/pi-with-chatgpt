@@ -850,7 +850,8 @@ Phase 6 当前已具备独立浏览器 profile、workspace 级会话 URL 存储�
 - [ ] Pairing code 自动输入
 - [x] conversation URL 持久化（workspace 级、验证 ChatGPT HTTPS host）
 - [x] INIT/EXECUTED 消息自动发送（Playwright 将 `request.outbound` 填入可见 composer 并发送；已通过真实 UI 单次收发验收）
-- [x] PLAN/DONE/BLOCKED 回复解析（transport 已从真实 UI 返回 assistant 原文；由现有 orchestrator 的结构化回复 parser 处理，协议端到端仍待验收）
+- [x] PLAN/DONE 回复解析（transport 已从真实 UI 返回 assistant 原文；2026-10-10 已用真实 ChatGPT 的 PLAN/DONE 回复跑通 Extension 自身 `parseControlReply`/`extractSection`：PLAN 段提取正确，阶段 PLANNING→EXECUTING→REVIEWING→DONE）
+- [x] BLOCKED 语义澄清（2026-10-10 决定：不新增 ChatGPT 侧喊停状态。`BLOCKED` 仅为 Pi 侧终态（iteration 超限/异常），协议只接受 `PLAN|FIX|DONE`；ChatGPT 若回 `BLOCKED` 会按「格式错误」安全失败并冻结写入）
 - [ ] timeout/retry/reconnect 策略（已有有界导航/回复等待和可操作错误提示；retry/reconnect 尚未实现）
 - [ ] connector 地址变化时 Delete + recreate
 - [ ] Named Tunnel 固定域名时禁止无意义重建 connector
@@ -954,8 +955,8 @@ tests/browser/
 - planning/review 时非只读 MCP 工具（`mcp__*`）被拒绝，EXECUTING/FIXING 放行
 - MCP 只读工具与资源工具在任意阶段放行
 - 无法读取 MCP 注解时 `mcp__*` 默认被阻止
-- iteration 超限
-- ChatGPT BLOCKED
+- iteration 超限（Pi 侧自动进入 BLOCKED，无需 ChatGPT 参与）
+- ChatGPT 无法返回 BLOCKED：`BLOCKED` 仅为 Pi 侧终态，协议只接受 `PLAN|FIX|DONE`（2026-10-10 决定，不新增 ChatGPT 侧喊停状态）
 - ChatGPT 回复格式错误
 - Quick Tunnel URL 变化
 - Named Tunnel URL 不变化
@@ -1108,4 +1109,4 @@ Pi Extension 驱动
 
 ## Next Step
 
-**Phase 6**：真实 CDP 单次发送及回复捕获已通过；下一步将 opt-in PlaywrightTransport 接入 Pi Extension，验证 PLAN/DONE/BLOCKED 端到端解析，然后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。
+**Phase 6**：真实 CDP 单次发送及回复捕获已通过；下一步将 opt-in PlaywrightTransport 接入 Pi Extension，验证 PLAN/DONE 端到端解析（BLOCKED 不适用，见上文决定），然后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。

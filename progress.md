@@ -124,15 +124,24 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - First live probe could not find the composer: two matching contenteditables existed, and `.first()` selected a hidden 0×0 copy. Switched to `:visible`. Second probe sent successfully and ChatGPT showed a reply, but timed out because the old `[data-message-author-role="assistant"]` selector matched zero nodes in the current UI.
 - Inspected the real reply markup: `[data-markdown-text-style="assistant-message"]` contained the assistant text. Added it as a reply selector fallback. A fresh live probe returned exactly `P2C_BROWSER_ACCEPTANCE_2_OK` from `PlaywrightTransport.exchange()`.
 - After the successful exchange, the CLI process stayed alive because CDP connection was not closed. `close()` now calls Playwright's attached `Browser.close()` to disconnect the client; verified the script exits and Chrome remains available (`/json/version` HTTP 200). This check did not send another message.
-- Focused tests: 13/13 passed; full suite: 17 files / 169 tests passed; typecheck, build, and diff check passed. Real protocol PLAN/DONE/BLOCKED parsing through the Extension is still unverified because Extension continues using ManualTransport.
+- Focused tests: 13/13 passed; full suite: 17 files / 169 tests passed; typecheck, build, and diff check passed. Real protocol parsing through the Extension was still unverified at this checkpoint because Extension continues using ManualTransport. (Superseded later the same day; see the real protocol round-trip checkpoint.)
 
 ## Upstream update review plan (2026-10-10)
 
 - Compared the locally available upstream snapshot `535a07d` against common ancestor `6395334`; reviewed changed-file scopes for candidate commits. This is a planning pass only: no upstream code was merged or cherry-picked.
 - Added `task_plan.md` §22 with P0 search/privacy and auth/pairing, P1 Windows/tunnel and MCP contract, optional P2 read-only media, explicit non-adoption of Codex-specific flows, per-batch tests, compatibility and security gates. Recheck upstream `main` before any implementation.
 
+## Phase 6 real protocol round-trip checkpoint (2026-10-10)
+
+- Sent the real `buildPlanRequest` message shape (INIT) through `PlaywrightTransport.exchange()` against the authenticated Chrome on loopback CDP `127.0.0.1:9333`. ChatGPT returned a well-formed `STATE: PLAN` control reply; a second exchange with the real `buildReviewRequest` shape returned `STATE: DONE` plus a `SUMMARY:` section. Both were captured verbatim from the live UI.
+- Ran those real replies through the actual extension command path (`/p2c` → plan, `agent_end` → review, `/p2c-review` → outcome) using the real `parseControlReply` / `extractSection` code, with only `TASK_ID`/`ITERATION` rewritten to the current task. Result: plan section extracted intact, phases went PLANNING → EXECUTING → REVIEWING → DONE. No parser change was needed for real ChatGPT formatting.
+- Confirmed task binding works against real input: the first harness run used the reply's own task id and the parser correctly rejected it with `ChatGPT reply belongs to <id>, not current task <id>`, which is the designed behavior.
+- Harness verification scripts and captured replies were temporary and have been recycled; no new test was added because the real reply shape is identical to the existing synthetic fixtures, so a fixture test would not add coverage.
+- Still not verified: end-to-end `/p2c` through the browser transport instead of `ManualTransport`; retry/reconnect; connector setup/pairing and URL lifecycle automation.
+- Plan/implementation mismatch found and resolved by decision (B): `parseControlReply` accepts only `PLAN|FIX|DONE`, so ChatGPT cannot return `BLOCKED`; `BLOCKED` is a Pi-side terminal phase only (iteration limit / workflow error), and a ChatGPT `BLOCKED` reply fails safely as a format error with mutations frozen. The Phase 6 checklist and §18 test list were corrected to match the implementation instead of adding a ChatGPT-side stop state. No behavior was changed.
+
 ## Next
 
-1. Wire opt-in CDP/Playwright transport into the Pi Extension and verify end-to-end PLAN/DONE/BLOCKED parsing; no implicit browser attachment.
+1. Wire opt-in CDP/Playwright transport into the Pi Extension and verify end-to-end PLAN/DONE parsing; no implicit browser attachment.
 2. Independently review §22 P0 upstream candidates against current code and tests, recording adopt/skip decisions before implementing any batch.
 3. Implement retry/reconnect and connector setup/pairing/lifecycle after browser protocol acceptance; improve execution evidence and Pi integration coverage.
