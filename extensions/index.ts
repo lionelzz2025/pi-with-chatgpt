@@ -280,8 +280,8 @@ function requireWorkflow(cwd: string, phase?: WorkflowPhase): WorkflowState {
   return state;
 }
 
-function buildPlanRequest(state: WorkflowState): string {
-  return `[P2C]\nSTATE: INIT\nTASK_ID: ${state.taskId}\nITERATION: ${state.iteration}\nWORKSPACE: ${state.workspaceName}\n\nGOAL:\n${state.goal}\n\nINSTRUCTIONS:\nUse the connected Pi with ChatGPT MCP tools to inspect the workspace and produce an implementation plan. Do not ask the user to paste source code, diffs, or logs into chat. Return a compact control response in this shape:\n\n[P2C]\nSTATE: PLAN\nTASK_ID: ${state.taskId}\nITERATION: ${state.iteration}\n\nPLAN:\n<steps for Pi to execute>`;
+function buildPlanRequest(state: WorkflowState, localOnly = false): string {
+  return `[P2C]\nSTATE: INIT\nTASK_ID: ${state.taskId}\nITERATION: ${state.iteration}\nWORKSPACE: ${state.workspaceName}\n\nGOAL:\n${state.goal}\n\nINSTRUCTIONS:\n${localOnly ? "This is a local-only browser transport check. You cannot inspect the workspace through MCP; plan only from the GOAL text and explicitly state assumptions. Do not claim to have inspected files." : "Use the connected Pi with ChatGPT MCP tools to inspect the workspace and produce an implementation plan. Do not ask the user to paste source code, diffs, or logs into chat."} Return a compact control response in this shape:\n\n[P2C]\nSTATE: PLAN\nTASK_ID: ${state.taskId}\nITERATION: ${state.iteration}\n\nPLAN:\n<steps for Pi to execute>`;
 }
 
 function buildReviewRequest(state: WorkflowState): string {
@@ -416,6 +416,22 @@ async function resolveApprovalMode(pi: ExtensionAPI, ctx: CommandContext): Promi
 }
 
 /**
+ * Read the workspace transport preference once per command. Never assumes a browser:
+ * a failed read keeps the safe copy/paste default.
+ */
+async function resolveTransportPreference(pi: ExtensionAPI, ctx: CommandContext): Promise<TransportResult> {
+  try {
+    return await runP2c<TransportResult>(pi, ctx, ["config", "transport"]);
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not read transport preference; using manual copy/paste: ${(error as Error).message}`,
+      "warning"
+    );
+    return { ok: true, mode: "manual" };
+  }
+}
+
+/**
  * Send one control message to ChatGPT through the configured transport.
  * Browser transport is opt-in (`p2c config transport browser --cdp <loopback url>`) and
  * never attaches implicitly; a browser failure is reported instead of silently
@@ -425,23 +441,16 @@ async function exchangeControl(
   pi: ExtensionAPI,
   ctx: CommandContext,
   state: WorkflowState,
-  request: ChatGptTransportRequest
+  request: ChatGptTransportRequest,
+  preference?: TransportResult
 ): Promise<string> {
-  let preference: TransportResult = { ok: true, mode: "manual" };
-  try {
-    preference = await runP2c<TransportResult>(pi, ctx, ["config", "transport"]);
-  } catch (error) {
-    ctx.ui.notify(
-      `Could not read transport preference; using manual copy/paste: ${(error as Error).message}`,
-      "warning"
-    );
-  }
+  const resolved = preference ?? (await resolveTransportPreference(pi, ctx));
 
-  if (preference.mode !== "browser") {
+  if (resolved.mode !== "browser") {
     return new ManualTransport(ctx.ui.editor).exchange(request);
   }
 
-  const cdpEndpoint = preference.cdpEndpoint;
+  const cdpEndpoint = resolved.cdpEndpoint;
   if (!cdpEndpoint || !state.workspaceId) {
     throw new Error(
       "Browser transport needs a CDP endpoint and a workspace id. Run `p2c config transport browser --cdp http://127.0.0.1:9222`, then start a new /p2c task; use `p2c config transport manual` to go back to copy/paste."
@@ -641,8 +650,12 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         if (!status.running) {
           throw new Error("Bridge is not running. Run /p2c-setup first so ChatGPT can inspect the workspace through MCP.");
         }
+        const transportPreference = await resolveTransportPreference(pi, ctx);
         if (!status.publicUrl) {
-          throw new Error("Bridge is running in local mode. Run /p2c-setup without `local` so ChatGPT can reach the MCP endpoint.");
+          if (transportPreference.mode !== "browser") {
+            throw new Error("Bridge is running in local mode. Run /p2c-setup without `local` so ChatGPT can reach the MCP endpoint.");
+          }
+          ctx.ui.notify("Browser transport is running with a local-only bridge: ChatGPT cannot inspect this workspace through MCP. Planning and review are limited to the exchanged text.", "warning");
         }
         state = {
           taskId: createTaskId(),
@@ -656,8 +669,8 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         saveWorkflow(pi, ctx, state);
         const reply = await exchangeControl(pi, ctx, state, {
           title: "ChatGPT planning round",
-          outbound: buildPlanRequest(state),
-        });
+          outbound: buildPlanRequest(state, !status.publicUrl),
+        }, transportPreference);
         parseControlReply(reply, state, ["PLAN"]);
         state.plan = extractSection(reply, "PLAN");
         delete state.error;

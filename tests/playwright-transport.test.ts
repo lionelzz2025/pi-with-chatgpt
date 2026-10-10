@@ -167,6 +167,35 @@ describe("PlaywrightTransport", () => {
     });
   });
 
+  it("accepts a new reply when ChatGPT virtualizes an older turn and the message count stays constant", async () => {
+    const { context, page, response } = makeContext();
+    let lastText = "old reply";
+    response.innerText = vi.fn(async () => lastText);
+    page.locator = vi.fn((selector: string) => selector.includes("data-message-author-role")
+      ? ({ count: async () => 5, last: () => response })
+      : makeContext().composer) as typeof page.locator;
+    page.waitForFunction = vi.fn(async (predicate: Function, args: object, options: object) => {
+      expect(args).toMatchObject({ previousCount: 5, previousText: "old reply" });
+      expect(options).toMatchObject({ polling: 250 });
+      const evaluate = (text: string, count: number) => {
+        const originalDocument = globalThis.document;
+        Object.defineProperty(globalThis, "document", { configurable: true, value: {
+          querySelectorAll: () => ({ length: count, item: () => ({ textContent: text }) }),
+          querySelector: () => null,
+        } });
+        try { return predicate(args); }
+        finally { Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument }); }
+      };
+      expect(evaluate("old reply", 5)).toBe(false);
+      lastText = "STATE: PLAN\\nnew reply";
+      expect(evaluate(lastText, 5)).toBe(true);
+    }) as typeof page.waitForFunction;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await transport.openSession("ws-virtualized");
+    await expect(transport.exchange({ title: "Plan", outbound: "[P2C]" })).resolves.toContain("new reply");
+  });
+
   it("fails with login guidance instead of sending on a signed-out page", async () => {
     const { context, page, composer } = makeContext();
     page.getByRole = vi.fn(() => ({ isVisible: async () => true })) as typeof page.getByRole;

@@ -99,7 +99,9 @@ export class PlaywrightTransport implements ChatGptTransport {
     await this.assertLoggedIn(page);
     const composer = page.locator(VISIBLE_COMPOSER_SELECTOR).first();
     await this.waitVisible(composer, "ChatGPT message composer was not found; sign in or update the supported UI selectors.");
-    const previousCount = await page.locator(CHATGPT_MESSAGE_SELECTOR).count();
+    const previousMessages = page.locator(CHATGPT_MESSAGE_SELECTOR);
+    const previousCount = await previousMessages.count();
+    const previousText = previousCount ? (await previousMessages.last().innerText()).trim() : "";
     await composer.fill(request.outbound);
     await composer.press("Enter");
 
@@ -107,17 +109,18 @@ export class PlaywrightTransport implements ChatGptTransport {
     const response = page.locator(CHATGPT_MESSAGE_SELECTOR).last();
     try {
       await page.waitForFunction(
-        ({ selector, previousCount, outbound }) => {
+        ({ selector, previousCount, previousText, outbound }) => {
           const messages = document.querySelectorAll(selector);
           const last = messages.item(messages.length - 1);
           const stopButton = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop generating" i], button[aria-label*="停止生成"]');
           const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label*="Send prompt" i], button[aria-label*="发送提示"]');
           const text = last?.textContent?.trim() ?? "";
-          return messages.length > previousCount && Boolean(text) && text !== outbound &&
+          // ChatGPT virtualizes older turns; the count may remain constant after a new reply.
+          return Boolean(text) && (messages.length > previousCount || text !== previousText) && text !== outbound &&
             stopButton === null && (sendButton === null || !sendButton.hasAttribute("disabled"));
         },
-        { selector: CHATGPT_MESSAGE_SELECTOR, previousCount, outbound: request.outbound },
-        { timeout, polling: "raf" },
+        { selector: CHATGPT_MESSAGE_SELECTOR, previousCount, previousText, outbound: request.outbound },
+        { timeout, polling: 250 },
       );
       await response.waitFor({ state: "visible", timeout });
     } catch (error) {

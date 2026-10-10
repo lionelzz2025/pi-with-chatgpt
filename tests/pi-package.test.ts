@@ -46,6 +46,7 @@ interface HarnessOptions {
   approvalMode?: "plan" | "auto";
   transport?: "manual" | "browser";
   cdpEndpoint?: string;
+  localOnly?: boolean;
   cwd?: string;
   initialEntries?: Array<{ type: string; customType: string; data: unknown }>;
   tools?: Array<{ name: string; annotations?: Record<string, boolean> }>;
@@ -84,7 +85,7 @@ function createHarness(options: HarnessOptions = {}) {
             workspaceId: "ws-demo",
             workspaceName: "demo",
             port: 48765,
-            publicUrl: "https://demo.example.test",
+            publicUrl: options.localOnly ? null : "https://demo.example.test",
           }) + "\n",
         stderr: "",
       };
@@ -321,6 +322,28 @@ describe("Pi extension commands", () => {
       "close",
     ]);
     expect(sentMessages[0]).toContain("Edit the implementation");
+  });
+
+  it("allows local-only browser planning with an explicit no-MCP warning", async () => {
+    const { commands, editor, notifications, sentMessages, ctx } = createHarness({
+      localOnly: true,
+      transport: "browser",
+      cdpEndpoint: "http://127.0.0.1:9333",
+    });
+    await commands["p2c"].handler("Plan from this goal only", ctx);
+    expect(editor).not.toHaveBeenCalled();
+    expect(playwrightMock.instances[0].events).toContain("exchange:ChatGPT planning round");
+    expect(playwrightMock.instances).toHaveLength(1);
+    expect(sentMessages[0]).toContain("Edit the implementation");
+    expect(notifications).toContainEqual(expect.objectContaining({ level: "warning", message: expect.stringContaining("cannot inspect") }));
+    expect(playwrightMock.instances[0].events).toContain("close");
+  });
+
+  it("still blocks local-only manual planning", async () => {
+    const { commands, editor, notifications, ctx } = createHarness({ localOnly: true, transport: "manual" });
+    await commands["p2c"].handler("Plan with manual transport", ctx);
+    expect(editor).not.toHaveBeenCalled();
+    expect(notifications).toContainEqual(expect.objectContaining({ level: "error", message: expect.stringContaining("local mode") }));
   });
 
   it("reports a browser transport failure instead of silently falling back to copy/paste", async () => {

@@ -148,8 +148,17 @@ Current milestone: **Phase 5 — Plan Approval baseline**, with ManualTransport 
 - Verified live: real CLI config write via a temporary state dir; `p2c status --json` returned `workspaceId 8e8bb3e46c81` from a running local bridge; two real browser exchanges (INIT→`STATE: PLAN`, REVIEW→`STATE: DONE`) both reopened the same saved conversation URL and persisted `state/sessions/8e8bb3e46c81.json`. Bridge stopped and the temporary workspace/state were recycled afterwards.
 - Verification: 17 files / 173 tests passed (4 new: browser transport used, browser failure reported without fallback, manual mode does not attach, CLI transport config persist/validate); typecheck, build, and `git diff --check` passed. Not yet verified: an actual `/p2c` run inside Pi with browser transport enabled (the extension path is covered by mocks only).
 
+## Phase 6 real Pi browser-command checkpoint (2026-10-10)
+
+- Ran actual `pi --mode json -p '/p2c ...'` with this Extension loaded, a local-only bridge on port 48765 and browser transport explicitly configured for `http://127.0.0.1:9333` (no tunnel/public URL). Git Bash requires `MSYS_NO_PATHCONV=1` for a leading `/p2c` prompt; otherwise it rewrites the slash into `C:/Program Files/Git/p2c` and Pi treats it as ordinary text.
+- `extensions/index.ts` now permits local-only **browser** transport with an explicit warning that ChatGPT cannot read MCP workspace data. Manual mode still requires a public URL. Local-only INIT tells ChatGPT to plan only from the goal and not claim file inspection. This is a reduced-capability protocol smoke test, not evidence-based implementation/review.
+- Two real `/p2c` attempts sent INIT and ChatGPT visibly returned matching PLAN replies, but the extension timed out. Its completion condition required the assistant DOM-node count to grow; ChatGPT virtualized an older turn, leaving the count at five. `PlaywrightTransport.exchange()` now compares the prior last-reply text as well as count and polls at 250 ms. The third real `/p2c` reached `PLAN_READY`, extracting the live PLAN; approval remained `plan`, so no Pi execution or file mutation followed. The transient failed runs used ephemeral Pi sessions. The successful JSON event log recorded `PLANNING → PLAN_READY` for `p2c_mv28n9xv_ewiw2v`.
+- Focused tests 34/34 passed; typecheck/build/diff check passed. Full parallel run: 175/176 passed, with the known unrelated MCP integration `ECONNRESET` → retry fixture collision. Its standalone single-worker rerun passed 15/15. This does **not** claim a clean full parallel suite. Tests now cover local browser/manual distinction and virtualized reply detection.
+- Cleanup: stopped the temporary local bridge and restored transport mode to `manual` (the stored CDP endpoint remains inert). Chrome was not closed. No tunnel or public URL was used.
+- Scope still open: real `/p2c` PLAN → Pi execution → ChatGPT REVIEW → DONE/FIX loop, retry/reconnect, and connector setup/pairing/lifecycle. Local-only ChatGPT cannot inspect workspace via MCP, so production review requires an alternative context path or a reachable connector.
+
 ## Next
 
-1. Run a real `/p2c` task in Pi with `p2c config transport browser` enabled to confirm the full automated loop end to end.
-2. Independently review §22 P0 upstream candidates against current code and tests, recording adopt/skip decisions before implementing any batch.
-3. Implement retry/reconnect and connector setup/pairing/lifecycle after browser protocol acceptance; improve execution evidence and Pi integration coverage.
+1. Decide how a no-public-URL workflow supplies trustworthy workspace evidence to ChatGPT for review; do not treat a goal-only PLAN smoke test as full automation.
+2. Independently review §22 P0 upstream candidates against current code/tests, recording adopt/skip decisions before implementing any batch.
+3. Implement retry/reconnect after browser protocol acceptance; improve execution evidence and Pi integration coverage.
