@@ -144,6 +144,7 @@ interface ExecutionObservation {
   lastTest?: {
     label: string;
     ok: boolean;
+    output: string;
   };
   bashErrors: number;
 }
@@ -342,7 +343,9 @@ function observeBashResult(cwd: string, event: ToolResultEvent): void {
   const label = testCommandLabel(command);
   if (event.isError) observation.bashErrors += 1;
   if (label) {
-    observation.lastTest = { label, ok: !event.isError };
+    const output = event.content?.filter((item) => item.type === "text" && typeof item.text === "string")
+      .map((item) => item.text).join("\n") ?? "";
+    observation.lastTest = { label, ok: !event.isError, output };
   }
   executionByWorkspace.set(cwd, observation);
 }
@@ -366,6 +369,28 @@ async function collectChangedFileCount(pi: ExtensionAPI, ctx: CommandContext): P
     timeout: 10_000,
   });
   return result.code === 0 ? changedEntryCount(result.stdout) : null;
+}
+
+async function collectVerificationOutput(pi: ExtensionAPI, ctx: CommandContext): Promise<string> {
+  const observation = executionByWorkspace.get(ctx.cwd);
+  if (!observation?.lastTest?.output) {
+    throw new Error("Local review requires actual test output; run a test command before review.");
+  }
+  const checks = [
+    { label: "git diff --check", args: ["diff", "--check"] },
+    { label: "git status --short", args: ["status", "--short"] },
+  ];
+  const chunks = [`$ ${observation.lastTest.label}\n${observation.lastTest.output}\nExit status: ${observation.lastTest.ok ? "0" : "nonzero (tool error)"}`];
+  for (const check of checks) {
+    const result = await pi.exec("git", check.args, { cwd: ctx.cwd, signal: ctx.signal, timeout: 10_000 });
+    chunks.push(`$ ${check.label}\n${result.stdout}${result.stderr}\nExit status: ${result.code}`);
+    if (result.code !== 0) throw new Error(`${check.label} failed with exit status ${result.code}; refusing review.`);
+  }
+  const output = chunks.join("\n\n");
+  if (Buffer.byteLength(output, "utf8") > 12 * 1024) {
+    throw new Error("Verification output exceeds the 12 KiB local evidence limit; no evidence was sent.");
+  }
+  return output;
 }
 
 async function recordExecution(pi: ExtensionAPI, ctx: CommandContext, state: WorkflowState): Promise<void> {
@@ -734,7 +759,7 @@ export default function piWithChatGPT(pi: ExtensionAPI): void {
         const status = await runP2c<StatusResult>(pi, ctx, ["status"]);
         const preference = await resolveTransportPreference(pi, ctx);
         const localEvidence = !status.publicUrl && preference.mode === "browser"
-          ? await collectLocalEvidence(ctx.cwd, state.goal, "review", state.taskId)
+          ? await collectLocalEvidence(ctx.cwd, state.goal, "review", state.taskId, await collectVerificationOutput(pi, ctx))
           : undefined;
         const reply = await exchangeControl(pi, ctx, state, {
           title: "ChatGPT review round",

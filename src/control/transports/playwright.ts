@@ -112,7 +112,7 @@ export class PlaywrightTransport implements ChatGptTransport {
     await this.waitVisible(composer, "ChatGPT message composer was not found; sign in or update the supported UI selectors.");
     const previousMessages = page.locator(CHATGPT_MESSAGE_SELECTOR);
     const previousCount = await previousMessages.count();
-    const previousText = previousCount ? (await previousMessages.last().innerText()).trim() : "";
+    const previousText = previousCount ? (await previousMessages.last().textContent() ?? "").trim() : "";
     if (request.attachments?.length) {
       // The active composer exposes a document input; hidden/disabled clones may also exist.
       const picker = page.locator('input[type="file"][aria-label="附加文件"]:not([disabled])');
@@ -141,12 +141,12 @@ export class PlaywrightTransport implements ChatGptTransport {
         ({ selector, previousCount, previousText, outbound }) => {
           const messages = document.querySelectorAll(selector);
           const last = messages.item(messages.length - 1);
-          const stopButton = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop generating" i], button[aria-label*="停止生成"]');
-          const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label*="Send prompt" i], button[aria-label*="发送提示"]');
           const text = last?.textContent?.trim() ?? "";
+          const turnState = last?.closest('[data-talvt-turn-state]')?.getAttribute("data-talvt-turn-state");
           // ChatGPT virtualizes older turns; the count may remain constant after a new reply.
+          // Buttons can disappear before streaming begins, so only trust the reply's own completed turn.
           return Boolean(text) && (messages.length > previousCount || text !== previousText) && text !== outbound &&
-            stopButton === null && (sendButton === null || !sendButton.hasAttribute("disabled"));
+            turnState === "complete";
         },
         { selector: CHATGPT_MESSAGE_SELECTOR, previousCount, previousText, outbound: request.outbound },
         { timeout, polling: 250 },

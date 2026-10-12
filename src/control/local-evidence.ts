@@ -27,7 +27,7 @@ function safePaths(workspace: Workspace, paths: string[]): string[] {
 }
 
 /** Create an in-memory, bounded attachment from workspace evidence, never a directory upload. */
-export async function collectLocalEvidence(root: string, goal: string, phase: "plan" | "review", taskId?: string): Promise<ChatGptAttachment> {
+export async function collectLocalEvidence(root: string, goal: string, phase: "plan" | "review", taskId?: string, verification?: string): Promise<ChatGptAttachment> {
   const workspace = new Workspace(root);
   const status = gitStatus(workspace.root);
   if (!status.isRepo) throw new Error("Local evidence requires a Git workspace; no evidence was sent.");
@@ -64,6 +64,11 @@ export async function collectLocalEvidence(root: string, goal: string, phase: "p
     const record = latestExecutionRecord(workspace.id);
     if (!record || record.taskId !== taskId) throw new Error("No execution record for this task; refusing evidence-free review.");
     sections.push(`Execution: iteration ${record.iteration}; status ${record.exitStatus}; tests ${record.tests ?? "not recorded"}`);
+    if (verification) {
+      if (Buffer.byteLength(verification, "utf8") > 12 * 1024) throw new Error("Verification output exceeds the 12 KiB local evidence limit; no evidence was sent.");
+      assertSafe(verification, "verification output");
+      sections.push(`## Actual command output\n\n\`\`\`text\n${verification}\n\`\`\``);
+    }
     if (changed.length === 0) throw new Error("No changed files found for local review; refusing evidence-free review.");
     for (const mode of ["staged", "unstaged"] as const) {
       const diff = gitDiff(workspace, { mode, maxBytes: 32 * 1024 });

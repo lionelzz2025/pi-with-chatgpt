@@ -47,6 +47,19 @@ describe("local Pi evidence", () => {
     expect(text(review)).toContain("unstaged diff");
     expect(text(review)).toContain("+export const feature = 2;");
     expect(text(review)).toContain("tests passed");
+    const verified = await collectLocalEvidence(root, "Update feature", "review", "task-1", "npm test: 1 passed, exit 0");
+    expect(text(verified)).toContain("Actual command output");
+    expect(text(verified)).toContain("npm test: 1 passed, exit 0");
+  });
+
+  it("refuses sensitive or oversized verification output", async () => {
+    const root = fixture();
+    fs.writeFileSync(path.join(root, "feature.ts"), "export const feature = 2;\n");
+    appendExecutionRecord(new Workspace(root).id, { taskId: "verified", iteration: 0, changedFiles: 1, tests: "passed", exitStatus: "ok", timestamp: new Date().toISOString() });
+    await expect(collectLocalEvidence(root, "Feature", "review", "verified", "api_key=supersecretvalue"))
+      .rejects.toThrow("possible credential");
+    await expect(collectLocalEvidence(root, "Feature", "review", "verified", "x".repeat(12 * 1024 + 1)))
+      .rejects.toThrow("12 KiB");
   });
 
   it("refuses mismatched review records and empty changes", async () => {

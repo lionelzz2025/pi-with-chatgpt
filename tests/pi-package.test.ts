@@ -354,6 +354,7 @@ describe("Pi extension commands", () => {
       localOnly: true, transport: "browser", cdpEndpoint: "http://127.0.0.1:9333",
     });
     await commands["p2c"].handler("Review local evidence", ctx);
+    await handlers.tool_result[0]({ toolName: "bash", input: { command: "npm test" }, content: [{ type: "text", text: "1 passed\n" }], isError: false }, ctx);
     await handlers.agent_end[0]({}, ctx);
     playwrightMock.reply = "[P2C]\nSTATE: DONE\n\nSUMMARY:\nReviewed attachment.";
     try {

@@ -19,13 +19,27 @@ function makeContext() {
     waitFor: vi.fn(async () => undefined),
     first: vi.fn(function (this: unknown) { return this; }),
   };
-  const response = { waitFor: vi.fn(async () => undefined), innerText: vi.fn(async () => "STATE: DONE\nTASK_ID: abc") };
+  const response = { waitFor: vi.fn(async () => undefined), innerText: vi.fn(async () => "STATE: DONE\nTASK_ID: abc"), textContent: vi.fn(async () => "STATE: DONE\nTASK_ID: abc") };
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
     url: () => currentUrl,
     locator: vi.fn((selector: string) => selector.includes("data-message-author-role") ? ({ count: async () => 0, last: () => response }) : composer),
     getByRole: vi.fn(() => ({ isVisible: async () => false })),
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async (predicate: Function, args: object) => {
+      const originalDocument = globalThis.document;
+      Object.defineProperty(globalThis, "document", { configurable: true, value: {
+        querySelectorAll: () => ({ length: 1, item: () => ({
+          textContent: "STATE: DONE\nTASK_ID: abc",
+          closest: () => ({ getAttribute: () => "complete" }),
+        }) }),
+        querySelector: () => null,
+      } });
+      try {
+        if (!predicate(args)) throw new Error("completion predicate rejected a finished reply");
+      } finally {
+        Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+      }
+    }),
   };
   const context = {
     pages: vi.fn(() => [page]),
@@ -286,29 +300,66 @@ describe("PlaywrightTransport", () => {
     const { context, page, response } = makeContext();
     let lastText = "old reply";
     response.innerText = vi.fn(async () => lastText);
+    response.textContent = vi.fn(async () => lastText);
     page.locator = vi.fn((selector: string) => selector.includes("data-message-author-role")
       ? ({ count: async () => 5, last: () => response })
       : makeContext().composer) as typeof page.locator;
     page.waitForFunction = vi.fn(async (predicate: Function, args: object, options: object) => {
       expect(args).toMatchObject({ previousCount: 5, previousText: "old reply" });
       expect(options).toMatchObject({ polling: 250 });
-      const evaluate = (text: string, count: number) => {
+      const evaluate = (text: string, count: number, turnState: string | null) => {
         const originalDocument = globalThis.document;
         Object.defineProperty(globalThis, "document", { configurable: true, value: {
-          querySelectorAll: () => ({ length: count, item: () => ({ textContent: text }) }),
+          querySelectorAll: () => ({ length: count, item: () => ({
+            textContent: text,
+            closest: () => turnState === null ? null : { getAttribute: () => turnState },
+          }) }),
           querySelector: () => null,
         } });
         try { return predicate(args); }
         finally { Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument }); }
       };
-      expect(evaluate("old reply", 5)).toBe(false);
-      lastText = "STATE: PLAN\\nnew reply";
-      expect(evaluate(lastText, 5)).toBe(true);
+      expect(evaluate("old reply", 5, "complete")).toBe(false);
+      lastText = "STATE: PLAN\nTASK_ID: abc\nITER";
+      expect(evaluate(lastText, 5, null)).toBe(false);
+      expect(evaluate(lastText, 5, "streaming")).toBe(false);
+      lastText = "STATE: PLAN\nTASK_ID: abc\nITERATION: 0\nPLAN:\nFull steps";
+      expect(evaluate(lastText, 5, "complete")).toBe(true);
     }) as typeof page.waitForFunction;
     const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
     await transport.initialize();
     await transport.openSession("ws-virtualized");
-    await expect(transport.exchange({ title: "Plan", outbound: "[P2C]" })).resolves.toContain("new reply");
+    await expect(transport.exchange({ title: "Plan", outbound: "[P2C]" })).resolves.toContain("PLAN:\nFull steps");
+  });
+
+  it("does not accept a prior completed reply while a new answer is starting", async () => {
+    const { context, page, response } = makeContext();
+    response.textContent = vi.fn(async () => "Previous complete reply");
+    // Rendered text can differ from textContent after Markdown/virtualized turn hydration.
+    response.innerText = vi.fn(async () => "Previous rendered reply");
+    page.locator = vi.fn((selector: string) => selector.includes("data-message-author-role")
+      ? ({ count: async () => 5, last: () => response })
+      : makeContext().composer) as typeof page.locator;
+    page.waitForFunction = vi.fn(async (predicate: Function, args: object) => {
+      expect(args).toMatchObject({ previousCount: 5, previousText: "Previous complete reply" });
+      const originalDocument = globalThis.document;
+      Object.defineProperty(globalThis, "document", { configurable: true, value: {
+        querySelectorAll: () => ({ length: 5, item: () => ({
+          textContent: "Previous complete reply",
+          closest: () => ({ getAttribute: () => "complete" }),
+        }) }),
+      } });
+      try {
+        expect(predicate(args)).toBe(false);
+        throw new Error("no new completed reply");
+      } finally {
+        Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+      }
+    }) as typeof page.waitForFunction;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await transport.openSession("ws-prior-reply");
+    await expect(transport.exchange({ title: "Review", outbound: "[P2C]" })).rejects.toThrow("Timed out waiting for ChatGPT");
   });
 
   it("fails with login guidance instead of sending on a signed-out page", async () => {
