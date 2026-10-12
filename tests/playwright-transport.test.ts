@@ -85,6 +85,88 @@ describe("PlaywrightTransport", () => {
     expect(browser.close).toHaveBeenCalledOnce();
   });
 
+  it("opens a fresh conversation for a new task instead of reusing an older workspace session", async () => {
+    const old = makeContext();
+    await old.page.goto("https://chatgpt.com/c/old-task");
+    const fresh = makeContext();
+    const { context } = makeContext();
+    (context.pages as unknown as ReturnType<typeof vi.fn>).mockReturnValue([old.page, fresh.page]);
+    (context.newPage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(fresh.page);
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await expect(transport.openSession("ws-new-task", { newChat: true })).resolves.toBe("https://chatgpt.com/");
+    await transport.exchange({ title: "New task", outbound: "[P2C]" });
+    expect(context.newPage).toHaveBeenCalledOnce();
+    expect(fresh.page.goto).toHaveBeenCalledWith("https://chatgpt.com/", expect.any(Object));
+    expect(old.page.locator).not.toHaveBeenCalled();
+    expect(fresh.page.locator).toHaveBeenCalled();
+  });
+
+  it("finds a unique existing project and opens its new-chat composer", async () => {
+    const { context, page } = makeContext();
+    const projectId = "g-p-abc123";
+    const create = { waitFor: vi.fn(async () => undefined), dispatchEvent: vi.fn() };
+    const rows = { evaluateAll: vi.fn(async (_fn: unknown, name: string) => name === "demo" ? [projectId] : []) };
+    const originalLocator = page.locator;
+    page.locator = vi.fn((selector: string) => selector === '[data-app-action-sidebar-project-create]'
+      ? create : selector === '[data-app-action-sidebar-project-row]' ? rows : originalLocator(selector)) as typeof page.locator;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await expect(transport.openSession("ws-project", { newChat: true, projectName: "demo" }))
+      .resolves.toBe(`https://chatgpt.com/g/${projectId}/project`);
+    expect(page.goto).toHaveBeenLastCalledWith(`https://chatgpt.com/g/${projectId}/project`, expect.any(Object));
+    expect(create.dispatchEvent).not.toHaveBeenCalled();
+    expect(rows.evaluateAll).toHaveBeenCalledWith(expect.any(Function), "demo");
+  });
+
+  it("creates an absent project then opens its new-chat composer", async () => {
+    const { context, page } = makeContext();
+    const projectId = "g-p-new456";
+    const create = { waitFor: vi.fn(async () => undefined), dispatchEvent: vi.fn(async () => undefined) };
+    const rows = { evaluateAll: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([projectId]) };
+    const fill = vi.fn(async () => undefined), click = vi.fn(async () => undefined);
+    const dialog = { waitFor: vi.fn(async () => undefined), locator: vi.fn(() => ({ fill })), getByRole: vi.fn(() => ({ click })) };
+    const originalLocator = page.locator;
+    page.locator = vi.fn((selector: string) => selector === '[data-app-action-sidebar-project-create]'
+      ? create : selector === '[data-app-action-sidebar-project-row]' ? rows : originalLocator(selector)) as typeof page.locator;
+    page.getByRole = vi.fn((role: string) => role === "dialog" ? dialog : { isVisible: async () => false }) as typeof page.getByRole;
+    page.waitForURL = vi.fn(async () => undefined) as typeof page.waitForURL;
+    page.waitForTimeout = vi.fn(async () => undefined) as typeof page.waitForTimeout;
+    page.waitForFunction = vi.fn(async () => undefined) as typeof page.waitForFunction;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await transport.openSession("ws-created", { newChat: true, projectName: "demo" });
+    expect(page.waitForTimeout).toHaveBeenCalledWith(750);
+    expect(create.dispatchEvent).toHaveBeenCalledWith("click");
+    expect(fill).toHaveBeenCalledWith("demo");
+    expect(click).toHaveBeenCalledOnce();
+    expect(page.goto).toHaveBeenLastCalledWith(`https://chatgpt.com/g/${projectId}/project`, expect.any(Object));
+  });
+
+  it("refuses duplicate projects before creating or sending", async () => {
+    const { context, page, composer } = makeContext();
+    const rows = { evaluateAll: vi.fn(async () => ["g-p-first", "g-p-second"]) };
+    const originalLocator = page.locator;
+    page.locator = vi.fn((selector: string) => selector === '[data-app-action-sidebar-project-create]'
+      ? { waitFor: async () => undefined } : selector === '[data-app-action-sidebar-project-row]'
+        ? rows : originalLocator(selector)) as typeof page.locator;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await expect(transport.openSession("ws-duplicate", { newChat: true, projectName: "demo" }))
+      .rejects.toThrow("exactly one matching ChatGPT project");
+    expect(composer.press).not.toHaveBeenCalled();
+  });
+
+  it("refuses review without a saved conversation instead of choosing another trusted tab", async () => {
+    const { context, page } = makeContext();
+    await page.goto("https://chatgpt.com/c/unrelated");
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await expect(transport.openSession("ws-no-task-session", { requireSavedSession: true }))
+      .rejects.toThrow("No saved ChatGPT conversation");
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+
   it("reuses the trusted ChatGPT tab instead of an unrelated first tab", async () => {
     const trusted = makeContext();
     await trusted.page.goto("https://chatgpt.com/c/existing");
@@ -101,6 +183,39 @@ describe("PlaywrightTransport", () => {
     expect(trusted.page.locator).toHaveBeenCalled();
     expect(unrelated.page.locator).not.toHaveBeenCalled();
     expect(unrelated.page.goto).not.toHaveBeenCalled();
+  });
+
+  it("uploads a bounded in-memory evidence attachment before sending the message", async () => {
+    const { context, page, composer } = makeContext();
+    const setInputFiles = vi.fn(async () => undefined);
+    const originalLocator = page.locator;
+    page.getByText = vi.fn(() => ({ first: () => ({ waitFor: async () => undefined }) })) as typeof page.getByText;
+    const sendClick = vi.fn(async () => undefined);
+    page.locator = vi.fn((selector: string) => selector === 'input[type="file"][aria-label="附加文件"]:not([disabled])'
+      ? { count: async () => 1, setInputFiles }
+      : selector === 'button[type="submit"][aria-label="发送"]'
+        ? { click: sendClick }
+        : originalLocator(selector)) as typeof page.locator;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await transport.openSession("ws-attachment");
+    await transport.exchange({ title: "Plan", outbound: "[P2C]", attachments: [{ name: "evidence.md", mimeType: "text/markdown", content: Buffer.from("safe") }] });
+    expect(setInputFiles).toHaveBeenCalledWith([{ name: "evidence.md", mimeType: "text/markdown", buffer: Buffer.from("safe") }]);
+    expect(setInputFiles.mock.invocationCallOrder[0]).toBeLessThan(sendClick.mock.invocationCallOrder[0]);
+    expect(composer.press).not.toHaveBeenCalled();
+  });
+
+  it("fails before sending when the document picker cannot be identified", async () => {
+    const { context, page, composer } = makeContext();
+    const originalLocator = page.locator;
+    page.locator = vi.fn((selector: string) => selector === 'input[type="file"][aria-label="附加文件"]:not([disabled])'
+      ? { count: async () => 0 }
+      : originalLocator(selector)) as typeof page.locator;
+    const transport = new PlaywrightTransport({ launchPersistentContext: async () => context });
+    await transport.initialize();
+    await transport.openSession("ws-picker");
+    await expect(transport.exchange({ title: "Plan", outbound: "[P2C]", attachments: [{ name: "evidence.md", mimeType: "text/markdown", content: Buffer.from("safe") }] })).rejects.toThrow("document attachment input");
+    expect(composer.press).not.toHaveBeenCalled();
   });
 
   it("navigates to a saved conversation even when another ChatGPT tab is already open", async () => {

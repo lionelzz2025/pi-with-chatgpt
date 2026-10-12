@@ -1107,6 +1107,23 @@ Pi Extension 驱动
 
 此审视工作与 Phase 6 浏览器集成并行排期；不把候选补丁视为 Phase 6 完成条件，也不因计划更新宣称它们已经合并。
 
+## Phase 6B — 无公网 URL 的本地证据附件（分支 `feat/local-evidence-browser`）
+
+目标：Pi 在本地选择、校验有界工作区证据，通过浏览器附件送给 ChatGPT；不开放本地目录，不要求公网 tunnel/MCP。仅 browser 本地模式启用，manual/MCP 路径不变。优先 fail-closed：超限、敏感内容、证据不完整时不发送；不把目标文字或模型回复视为可信文件指令。
+
+- [x] 检查已有 Workspace/IgnoreRules/gitDiff/Playwright 能力并建立分支。
+- [x] 证据收集：受限文件、diff、执行记录；敏感文件和正文检查、完整性限制及测试。
+- [x] 浏览器附件发送与 Extension 规划/评审接线；发送前核对，异常不宣称成功。新任务先定位/创建同名 ChatGPT 项目并在项目内新建聊天，评审要求回到保存的聊天。
+- [x] 定向与串行全量测试、typecheck/build；合成附件已在真实 ChatGPT 项目内发送并收到回复。真实工作区证据的完整 `/p2c` 规划/执行/评审闭环仍待验收。
+
+### Errors Encountered
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| `TS2305: Module './transport.js' has no exported member 'ChatGptAttachment'` | 首次本地证据模块类型检查 | 增加附件请求类型，继续接线验证。 |
+| `Cannot include non-file evidence: AGENTS.md` | 新证据单测 2/4 失败 | 可选方向文件不存在时跳过，变更文件仍 fail-closed。 |
+| `login.isVisible is not a function` | 附件菜单 mock 覆盖了登录按钮 mock，附件测试 2/13 失败 | 按 role 返回菜单或登录按钮，重新运行。 |
+
 ## Next Step
 
-**Phase 6**：传输层与 Extension 接线已完成（`exchangeControl()`：manual 默认，browser 显式 opt-in，失败不静默回退）；真实浏览器两轮收发与会话复用已验证。下一步在 Pi 内实跑一次启用了 browser transport 的 `/p2c` 任务，确认全自动闭环；随后处理 retry/reconnect 与 connector 生命周期。**上游审视**：先按第 22 节 P0 项逐个核对当前实现和依赖，给出采纳/跳过结论；获得具体实施安排后再移植，不直接合并上游分支。
+执行真实 `/p2c` 的 PLAN → Pi 执行 → REVIEW → DONE/FIX 闭环验收；在此之前不要宣称系统验收通过。确认本地证据筛选策略和附件中敏感信息风险可接受。

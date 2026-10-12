@@ -2,6 +2,15 @@
 
 Last updated: 2026-10-10
 
+## Phase 6B local evidence feature branch (2026-10-10)
+
+- Created `feat/local-evidence-browser` from main. Implementing local Pi-selected evidence as an in-memory markdown attachment for browser transport only; no tunnel/public URL.
+- Added `src/control/local-evidence.ts`: bounded file selection with Workspace/IgnoreRules, Git diff, execution record, secret check, size/count bounds and fail-closed incomplete review. Added browser document-input upload before message send and Extension local PLAN/REVIEW attachment wiring.
+- New `/p2c` task finds a same-named ChatGPT project, creates one if absent, then opens a fresh chat in that project; later review requires the saved chat, rather than choosing another tab. Duplicate project names fail closed.
+- Real browser smoke: reused an existing project, created a synthetic test project, uploaded a synthetic markdown attachment, received `P2C_PROJECT_ATTACHMENT_OK`, and reopened its saved project chat. No workspace evidence was sent in this probe. The synthetic test project remains in ChatGPT and may be removed manually if undesired.
+- Final serial full suite passed 189/189 (18 files), and typecheck/build/diff check passed. Earlier parallel runs occasionally hit resource/timeouts; do not count them as clean passes. Full real `/p2c` PLAN → Pi execution → REVIEW → DONE/FIX has not been validated.
+- Errors resolved: absent optional `AGENTS.md` blocked evidence fixture; ChatGPT virtualized/hydrated project sidebar caused a false absent-project lookup; an earlier validation command timed out under process load. Each has a targeted fix or an isolated rerun.
+
 ## Overall
 
 The repository has moved from a Codex-specific fork to an installable Pi package while preserving the existing secure Bridge/MCP/OAuth/Pairing/Tunnel core.

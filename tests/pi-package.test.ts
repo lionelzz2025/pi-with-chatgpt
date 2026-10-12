@@ -7,6 +7,7 @@ import registerPiWithChatGPT from "../extensions/index.js";
 interface PlaywrightStub {
   options: { cdpEndpoint?: string; timeoutMs?: number };
   events: string[];
+  requests: Array<{ title: string; outbound: string; attachments?: Array<{ name: string }> }>;
 }
 
 const playwrightMock = vi.hoisted(() => ({
@@ -20,22 +21,28 @@ vi.mock("../src/control/transports/playwright.js", () => ({
   PlaywrightTransport: class {
     options: { cdpEndpoint?: string; timeoutMs?: number };
     events: string[] = [];
+    requests: Array<{ title: string; outbound: string; attachments?: Array<{ name: string }> }> = [];
     constructor(options: { cdpEndpoint?: string; timeoutMs?: number }) {
       this.options = options;
       playwrightMock.instances.push(this as unknown as PlaywrightStub);
     }
     async initialize(): Promise<void> { this.events.push("initialize"); }
-    async openSession(workspaceId: string): Promise<string> {
-      this.events.push(`openSession:${workspaceId}`);
+    async openSession(workspaceId: string, options?: { newChat?: boolean; projectName?: string }): Promise<string> {
+      this.events.push(`openSession:${workspaceId}${options?.newChat ? `:new:${options.projectName}` : ""}`);
       return "https://chatgpt.com/c/mocked";
     }
-    async exchange(request: { title: string }): Promise<string> {
+    async exchange(request: { title: string; outbound: string; attachments?: Array<{ name: string }> }): Promise<string> {
       this.events.push(`exchange:${request.title}`);
+      this.requests.push(request);
       if (playwrightMock.failExchange) throw new Error("composer not found");
       return playwrightMock.reply;
     }
     async close(): Promise<void> { this.events.push("close"); }
   },
+}));
+
+vi.mock("../src/control/local-evidence.js", () => ({
+  collectLocalEvidence: vi.fn(async () => ({ name: "p2c-plan-evidence.md", mimeType: "text/markdown", content: Buffer.from("evidence") })),
 }));
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -317,7 +324,7 @@ describe("Pi extension commands", () => {
     expect(playwrightMock.instances[0].options).toMatchObject({ cdpEndpoint: "http://127.0.0.1:9222" });
     expect(playwrightMock.instances[0].events).toEqual([
       "initialize",
-      "openSession:ws-demo",
+      "openSession:ws-demo:new:demo",
       "exchange:ChatGPT planning round",
       "close",
     ]);
@@ -332,11 +339,37 @@ describe("Pi extension commands", () => {
     });
     await commands["p2c"].handler("Plan from this goal only", ctx);
     expect(editor).not.toHaveBeenCalled();
+    expect(playwrightMock.instances[0].events).toContain("openSession:ws-demo:new:demo");
     expect(playwrightMock.instances[0].events).toContain("exchange:ChatGPT planning round");
+    expect(playwrightMock.instances[0].requests[0].attachments).toEqual([expect.objectContaining({ name: "p2c-plan-evidence.md" })]);
+    expect(playwrightMock.instances[0].requests[0].outbound).toContain("Inspect the attached Pi-selected workspace evidence");
     expect(playwrightMock.instances).toHaveLength(1);
     expect(sentMessages[0]).toContain("Edit the implementation");
-    expect(notifications).toContainEqual(expect.objectContaining({ level: "warning", message: expect.stringContaining("cannot inspect") }));
+    expect(notifications).toContainEqual(expect.objectContaining({ level: "warning", message: expect.stringContaining("cannot browse") }));
     expect(playwrightMock.instances[0].events).toContain("close");
+  });
+
+  it("attaches local review evidence in the same project conversation", async () => {
+    const { commands, handlers, notifications, ctx } = createHarness({
+      localOnly: true, transport: "browser", cdpEndpoint: "http://127.0.0.1:9333",
+    });
+    await commands["p2c"].handler("Review local evidence", ctx);
+    await handlers.agent_end[0]({}, ctx);
+    playwrightMock.reply = "[P2C]\nSTATE: DONE\n\nSUMMARY:\nReviewed attachment.";
+    try {
+      await commands["p2c-review"].handler("", ctx);
+      expect(playwrightMock.instances).toHaveLength(2);
+      expect(playwrightMock.instances[1].events).toEqual([
+        "initialize", "openSession:ws-demo", "exchange:ChatGPT review round", "close",
+      ]);
+      expect(playwrightMock.instances[1].requests[0].attachments).toEqual([
+        expect.objectContaining({ name: "p2c-plan-evidence.md" }),
+      ]);
+      expect(playwrightMock.instances[1].requests[0].outbound).toContain("attached local Pi evidence package");
+      expect(notifications.some((item) => item.level === "error")).toBe(false);
+    } finally {
+      playwrightMock.reply = "[P2C]\nSTATE: PLAN\n\nPLAN:\n1. Edit the implementation.";
+    }
   });
 
   it("still blocks local-only manual planning", async () => {

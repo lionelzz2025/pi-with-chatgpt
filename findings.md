@@ -2,6 +2,12 @@
 
 Last updated: 2026-10-10
 
+## Phase 6B findings (2026-10-10)
+
+- 当前 `PlaywrightTransport.exchange` 只向 composer 发送文本，没有附件接口；本地模式下原 INIT 仅包含 GOAL，REVIEW 明确要求 MCP，不能直接称为无公网完整闭环。
+- 复用 `Workspace.resolve/readFile` 防目录逃逸与敏感文件，`IgnoreRules` 阻止敏感/噪声路径，`gitDiff` 已对敏感路径过滤并设聚合上限；新的外发证据需额外拒绝正文疑似凭据、超限与静默截断。
+- `gitStatus` 可列变动文件，`latestExecutionRecord` 提供任务对应执行结果；只有两者及有界 diff/文件齐备才允许本地评审。发送给 ChatGPT 的附件本质上是外传源码，需用户在启用 browser 模式时知情。
+
 ## Architecture findings
 
 ### Keep Bridge/MCP agent-neutral
